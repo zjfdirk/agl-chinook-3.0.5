@@ -1,0 +1,1532 @@
+From 6595ab5e2e0b00d9654471f70fed8f116f58e731 Mon Sep 17 00:00:00 2001
+From: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+Date: Fri, 27 Jan 2017 15:11:40 +0300
+Subject: [PATCH 17/17] rcar: add virtio-over-pcie-interconnect framework
+
+---
+ drivers/misc/mic/Kconfig                          |   4 +-
+ drivers/misc/mic/vop/Makefile                     |   2 +-
+ drivers/pci/host/pcie-rcar.c                      | 445 +++++++++++-
+ drivers/virtio/Kconfig                            |   7 +
+ drivers/virtio/Makefile                           |   1 +
+ drivers/virtio/virtio_rcar_pcie.c                 | 802 ++++++++++++++++++++++
+ include/linux/virtio_rcar_pcie.h                  |  38 +
+ 7 files changed, 1296 insertions(+), 22 deletions(-)
+ create mode 100644 drivers/virtio/virtio_rcar_pcie.c
+ create mode 100644 include/linux/virtio_rcar_pcie.h
+
+diff --git a/drivers/misc/mic/Kconfig b/drivers/misc/mic/Kconfig
+index 2e4f3ba..e1938fe 100644
+--- a/drivers/misc/mic/Kconfig
++++ b/drivers/misc/mic/Kconfig
+@@ -36,7 +36,7 @@ comment "VOP Bus Driver"
+ 
+ config VOP_BUS
+ 	tristate "VOP Bus Driver"
+-	depends on 64BIT && PCI && X86 && X86_DEV_DMA_OPS
++	depends on (64BIT && PCI && X86 && X86_DEV_DMA_OPS) || VIRTIO_RCAR_PCIE
+ 	help
+ 	  This option is selected by any driver which registers a
+ 	  device or driver on the VOP Bus, such as CONFIG_INTEL_MIC_HOST
+@@ -130,7 +130,7 @@ comment "VOP Driver"
+ 
+ config VOP
+ 	tristate "VOP Driver"
+-	depends on 64BIT && PCI && X86 && VOP_BUS
++	depends on VOP_BUS
+ 	select VHOST_RING
+ 	help
+ 	  This enables VOP (Virtio over PCIe) Driver support for the Intel
+diff --git a/drivers/misc/mic/vop/Makefile b/drivers/misc/mic/vop/Makefile
+index 78819c8..d99c38e 100644
+--- a/drivers/misc/mic/vop/Makefile
++++ b/drivers/misc/mic/vop/Makefile
+@@ -2,7 +2,7 @@
+ # Makefile - Intel MIC Linux driver.
+ # Copyright(c) 2016, Intel Corporation.
+ #
+-obj-m := vop.o
++obj-$(CONFIG_VOP) := vop.o
+ 
+ vop-objs += vop_main.o
+ vop-objs += vop_debugfs.o
+diff --git a/drivers/pci/host/pcie-rcar.c b/drivers/pci/host/pcie-rcar.c
+index 87de6c6..21071e2 100644
+--- a/drivers/pci/host/pcie-rcar.c
++++ b/drivers/pci/host/pcie-rcar.c
+@@ -29,6 +29,7 @@
+ #include <linux/pm_runtime.h>
+ #include <linux/slab.h>
+ #include <linux/soc/renesas/s2ram_ddr_backup.h>
++#include <linux/virtio_rcar_pcie.h>
+ 
+ #define DRV_NAME "rcar-pcie"
+ 
+@@ -41,15 +42,21 @@
+ #define PCIEMSR			0x000028
+ #define PCIEINTXR		0x000400
+ #define PCIEMSITXR		0x000840
++#define  MSIE			(1 << 31)
++#define  MMENUM			(31 << 16)
++#define  MMENUM_POS		16
+ 
+ /* Transfer control */
+ #define PCIETCTLR		0x02000
+ #define  DL_DOWN		(1 << 3)
+ #define  CFINIT			1
+ #define PCIETSTR		0x02004
++#define  INTXDC			(1 << 12)
+ #define  DATA_LINK_ACTIVE	1
+ #define PCIEERRFR		0x02020
+ #define  UNSUPPORTED_REQUEST	(1 << 4)
++#define PCIETIER		0x02030
++#define  INTXDCE		(1 << 12)
+ #define PCIEMSIFR		0x02044
+ #define PCIEMSIALR		0x02048
+ #define  MSIFE			1
+@@ -74,13 +81,40 @@
+ #define  PAR_ENABLE		(1 << 31)
+ #define  IO_SPACE		(1 << 8)
+ 
++/* DMA */
++#define PCIEDMAOR		0x04000
++#define  DMAE			(1 << 31)
++#define  ABT			(1 << 0)
++#define PCIEDMPALR(x)		(0x04100 + ((x) * 0x40))
++#define PCIEDMPAUR(x)		(0x04104 + ((x) * 0x40))
++#define PCIEDMIAR(x)		(0x04108 + ((x) * 0x40))
++#define PCIEDMBCNTR(x)		(0x04110 + ((x) * 0x40))
++#define PCIEDMCCAR(x)		(0x04120 + ((x) * 0x40))
++#define PCIEDMCHCR(x)		(0x04128 + ((x) * 0x40))
++#define  CHE			(1 << 31)
++#define  CHDIR			(1 << 30)
++#define  CHCCE			(1 << 29)
++#define  CHT			(1 << 28)
++#define PCIEDMCHSR(x)		(0x0412C + ((x) * 0x40))
++#define  CHTCE			(1 << 28)
++#define  CHPEEE			(1 << 27)
++#define  CHIBEE			(1 << 25)
++#define  CHTC			(1 << 12)
++#define  CHPEE			(1 << 11)
++#define  CHIBE			(1 << 9)
++#define  CHIE			(1 << 3)
++#define  CHTE			(1 << 0)
++#define PCIEDMCHC2R(x)		(0x04130 + ((x) * 0x40))
++
+ /* Configuration */
+ #define PCICONF(x)		(0x010000 + ((x) * 0x4))
+ #define PMCAP(x)		(0x010040 + ((x) * 0x4))
++#define MSICAP(x)		(0x010050 + ((x) * 0x4))
+ #define EXPCAP(x)		(0x010070 + ((x) * 0x4))
+ #define VCCAP(x)		(0x010100 + ((x) * 0x4))
+ 
+ /* link layer */
++#define IDSETR0			0x011000
+ #define IDSETR1			0x011004
+ #define TLCTLR			0x011048
+ #define MACSR			0x011054
+@@ -124,6 +158,7 @@
+ 
+ #define RCONF(x)	(PCICONF(0)+(x))
+ #define RPMCAP(x)	(PMCAP(0)+(x))
++#define RMSICAP(x)	(MSICAP(0)+(x))
+ #define REXPCAP(x)	(EXPCAP(0)+(x))
+ #define RVCCAP(x)	(VCCAP(0)+(x))
+ 
+@@ -134,6 +169,8 @@
+ #define RCAR_PCI_MAX_RESOURCES 4
+ #define MAX_NR_INBOUND_MAPS 6
+ 
++#define RCAR_PCIE_DMA_CHANNELS 8
++
+ struct rcar_msi {
+ 	DECLARE_BITMAP(used, INT_PCI_MSI_NR);
+ 	struct irq_domain *domain;
+@@ -159,6 +196,24 @@ struct rcar_pcie {
+ 	struct clk		*clk;
+ 	struct clk		*bus_clk;
+ 	struct			rcar_msi msi;
++
++	bool			endpoint;
++#ifdef CONFIG_VIRTIO_RCAR_PCIE
++	struct vrp_host		*vrp_host;
++#endif
++
++	struct {
++		void __iomem	*addr;
++		size_t		size;
++	} outbound[RCAR_PCIE_OUTBOUND_REGIONS];
++
++	void			*inbound_area;
++	dma_addr_t		inbound_area_dma;
++
++	unsigned long		dma_chan_busy;		/* pref-channel bits */
++	struct rcar_pcie_dma_req *dma_req[RCAR_PCIE_DMA_CHANNELS];
++	wait_queue_head_t	dma_chan_wait;
++	spinlock_t		dma_lock;
+ };
+ 
+ static int rcar_pcie_wait_for_dl(struct rcar_pcie *pcie);
+@@ -703,7 +756,7 @@ static void phy_write_reg(struct rcar_pcie *pcie,
+ 
+ static int rcar_pcie_wait_for_dl(struct rcar_pcie *pcie)
+ {
+-	unsigned int timeout = 10;
++	unsigned int timeout = pcie->endpoint ? 10000 : 10;
+ 
+ 	while (timeout--) {
+ 		if ((rcar_pci_read_reg(pcie, PCIETSTR) & DATA_LINK_ACTIVE))
+@@ -715,10 +768,49 @@ static int rcar_pcie_wait_for_dl(struct rcar_pcie *pcie)
+ 	return -ETIMEDOUT;
+ }
+ 
++static int rcar_pcie_ep_hw_init(struct rcar_pcie *pcie)
++{
++	int err;
++
++	/* Begin initialization */
++	rcar_pci_write_reg(pcie, 0, PCIETCTLR);
++
++	/* Set endpoint mode */
++	rcar_pci_write_reg(pcie, 0, PCIEMSR);
++
++	rcar_pci_write_reg(pcie,
++		(VIRTIO_RCAR_PCIE_DEVICE_ID << 16) | PCI_VENDOR_ID_RENESAS, IDSETR0);
++	rcar_pci_write_reg(pcie, PCI_CLASS_COMMUNICATION_OTHER << 16, IDSETR1);
++
++	/* Initialize default capabilities. */
++	rcar_rmw32(pcie, RCONF(PCI_HEADER_TYPE), 0x7f,
++		PCI_HEADER_TYPE_NORMAL);
++	rcar_rmw32(pcie, REXPCAP(PCI_EXP_FLAGS),
++		PCI_EXP_FLAGS_TYPE, PCI_EXP_TYPE_ENDPOINT << 4);
++
++	/* Set the completion timer timeout to the maximum 50ms. */
++	rcar_rmw32(pcie, TLCTLR+1, 0x3f, 50);
++
++	/* Finish initialization - establish a PCI Express link */
++	rcar_pci_write_reg(pcie, CFINIT, PCIETCTLR);
++
++	/* This will timeout if we don't have a link. */
++	err = rcar_pcie_wait_for_dl(pcie);
++	if (err)
++		return err;
++
++	wmb();
++
++	return 0;
++}
++
+ static int rcar_pcie_hw_init(struct rcar_pcie *pcie)
+ {
+ 	int err;
+ 
++	if (pcie->endpoint)
++		return rcar_pcie_ep_hw_init(pcie);
++
+ 	/* Begin initialization */
+ 	rcar_pci_write_reg(pcie, 0, PCIETCTLR);
+ 
+@@ -1290,6 +1382,295 @@ out_release_res:
+ 	return err;
+ }
+ 
++static int rcar_pcie_ep_setup_inbound(struct rcar_pcie *pcie)
++{
++	/* *** To be replaced with better design ***
++	 *
++	 * This sets up a single inbound area of VRP_HOST_MEM_SIZE size
++	 */
++
++	int i;
++
++	/* FIXME: need alignment here. The below code is wasteful as a hell,
++	 * need something better */
++	void __iomem *area;
++	dma_addr_t area_dma;
++	u32 offset;
++
++	area = dmam_alloc_coherent(pcie->dev, 2 * VRP_HOST_MEM_SIZE,
++			&area_dma, GFP_KERNEL);
++	if (!area)
++		return -ENOMEM;
++	BUG_ON(area_dma > 0xffffffffull);
++
++	offset = area_dma & (VRP_HOST_MEM_SIZE - 1) ?
++		VRP_HOST_MEM_SIZE - (area_dma & (VRP_HOST_MEM_SIZE - 1)) : 0;
++
++	pcie->inbound_area = area + offset;
++	pcie->inbound_area_dma = area_dma + offset;
++
++	rcar_pci_write_reg(pcie,
++			lower_32_bits(pcie->inbound_area_dma), PCIELAR(0));
++	rcar_pci_write_reg(pcie,
++			((VRP_HOST_MEM_SIZE - 1) & ~0xf) | LAR_ENABLE,
++			PCIELAMR(0));
++
++	for (i = 1; i <= 5; i++) {
++		rcar_pci_write_reg(pcie, 0, PCIELAR(i));
++		rcar_pci_write_reg(pcie, 0, PCIELAMR(i));
++	}
++
++	return 0;
++}
++
++static irqreturn_t rcar_pcie_ep_irq(int irq, void *data)
++{
++	struct rcar_pcie *pcie = data;
++	u32 val;
++
++	val = rcar_pci_read_reg(pcie, PCIETSTR) & INTXDC;
++	if (!val)
++		return IRQ_NONE;
++
++	rcar_pci_write_reg(pcie, val, PCIETSTR);
++
++#ifdef CONFIG_VIRTIO_RCAR_PCIE
++	if (pcie->vrp_host)
++		vrp_host_notification(pcie->vrp_host);
++#endif
++
++	return IRQ_HANDLED;
++}
++
++static int rcar_pcie_ep_setup_irq(struct rcar_pcie *pcie)
++{
++	rcar_pci_write_reg(pcie, INTXDC, PCIETSTR);
++	rcar_pci_write_reg(pcie, INTXDCE, PCIETIER);
++
++	return devm_request_irq(pcie->dev, pcie->msi.irq1, rcar_pcie_ep_irq,
++		IRQF_SHARED | IRQF_NO_THREAD, "rcar-pcie-ep", pcie);
++}
++
++#ifdef CONFIG_VIRTIO_RCAR_PCIE
++struct vrp_host *rcar_pcie_ep_get_vrp_host(struct device *ep_dev)
++{
++	struct rcar_pcie *pcie = dev_get_drvdata(ep_dev);
++
++	return pcie->vrp_host;
++}
++#endif
++
++int rcar_pcie_ep_send_msi(struct device *ep_dev, int msi)
++{
++	struct rcar_pcie *pcie = dev_get_drvdata(ep_dev);
++	u32 val;
++
++	val = rcar_pci_read_reg(pcie, PCIEMSITXR);
++	if (!(val & MSIE))
++		return -ENODEV;		/* MSI not enabled */
++	if (((val & MMENUM) >> MMENUM_POS) < msi)
++		return -ENOENT;		/* this MSI not available */
++
++	/* Lower bits are msi number, higher bits are zero */
++	rcar_pci_write_reg(pcie, msi, PCIEMSITXR);
++
++	return 0;
++}
++
++static int rcar_pcie_ep_prepare_outbound(struct rcar_pcie *pcie)
++{
++	struct of_pci_range range;
++	struct of_pci_range_parser parser;
++	struct resource res;
++	void __iomem *addr;
++	int win, ret;
++
++	ret = of_pci_range_parser_init(&parser, pcie->dev->of_node);
++	if (ret)
++		return ret;
++
++	win = 0;
++	for_each_of_pci_range(&parser, &range) {
++
++		if (win >= RCAR_PCIE_OUTBOUND_REGIONS)
++			goto unexpected;
++
++		res.flags = IORESOURCE_MEM;
++		res.start = range.cpu_addr;
++		res.end = res.start + range.size - 1;
++		res.name = "rcar-pcie-ep";
++
++		addr = devm_ioremap_resource(pcie->dev, &res);
++		if (IS_ERR(addr))
++			return PTR_ERR(addr);
++
++		pcie->outbound[win].addr = addr;
++		pcie->outbound[win].size = range.size;
++
++		win++;
++	}
++
++	if (win == RCAR_PCIE_OUTBOUND_REGIONS)
++		return 0;
++unexpected:
++	dev_err(pcie->dev, "unexpected ranges configuration\n");
++	return -EINVAL;
++}
++
++void __iomem *rcar_pcie_ep_outbound_addr(struct device *ep_dev, int win)
++{
++	struct rcar_pcie *pcie = dev_get_drvdata(ep_dev);
++
++	BUG_ON(win < 0 || win >= RCAR_PCIE_OUTBOUND_REGIONS);
++	return pcie->outbound[win].addr;
++}
++
++size_t rcar_pcie_ep_outbound_size(struct device *ep_dev, int win)
++{
++	struct rcar_pcie *pcie = dev_get_drvdata(ep_dev);
++
++	BUG_ON(win < 0 || win >= RCAR_PCIE_OUTBOUND_REGIONS);
++	return pcie->outbound[win].size;
++}
++
++void rcar_pcie_ep_map_outbound(struct device *ep_dev, int win, dma_addr_t remote_addr)
++{
++	struct rcar_pcie *pcie = dev_get_drvdata(ep_dev);
++	struct resource res;
++
++	BUG_ON(win < 0 || win >= RCAR_PCIE_OUTBOUND_REGIONS);
++
++	res.start = remote_addr;
++	res.end = res.start + pcie->outbound[win].size - 1;
++	res.flags = IORESOURCE_MEM;
++
++	rcar_pcie_setup_window(win, pcie, &res);
++}
++
++void rcar_pcie_ep_submit_dma_req(struct device *ep_dev,
++		struct rcar_pcie_dma_req *req)
++{
++	struct rcar_pcie *pcie = dev_get_drvdata(ep_dev);
++	int ch;
++	u32 val;
++	unsigned long flags;
++
++	BUG_ON(req->remote_addr & (RCAR_PCIE_DMA_ALIGNMENT - 1));
++	BUG_ON(req->local_addr & (RCAR_PCIE_DMA_ALIGNMENT - 1));
++	BUG_ON(upper_32_bits(req->local_addr));
++	BUG_ON(req->size & (RCAR_PCIE_DMA_ALIGNMENT - 1));
++
++	spin_lock_irqsave(&pcie->dma_lock, flags);
++
++	while (1) {
++		ch = find_first_zero_bit(&pcie->dma_chan_busy,
++				RCAR_PCIE_DMA_CHANNELS);
++		if (ch < RCAR_PCIE_DMA_CHANNELS) {
++			set_bit(ch, &pcie->dma_chan_busy);
++			break;
++		}
++		spin_unlock_irqrestore(&pcie->dma_lock, flags);
++		wait_event(pcie->dma_chan_wait, pcie->dma_chan_busy !=
++			       	(1 << RCAR_PCIE_DMA_CHANNELS) - 1);
++		spin_lock_irqsave(&pcie->dma_lock, flags);
++	}
++
++	BUG_ON(pcie->dma_req[ch] != NULL);
++	pcie->dma_req[ch] = req;
++
++	rcar_pci_write_reg(pcie,
++		lower_32_bits(req->remote_addr), PCIEDMPALR(ch));
++	rcar_pci_write_reg(pcie,
++		upper_32_bits(req->remote_addr), PCIEDMPAUR(ch));
++	rcar_pci_write_reg(pcie, req->local_addr, PCIEDMIAR(ch));
++	rcar_pci_write_reg(pcie, req->size, PCIEDMBCNTR(ch));
++
++	/* Enable all interrupts, clear all pending interrupts */
++	val = CHTCE | CHTC | CHPEEE | CHPEE | CHIBEE | CHIBE | CHIE | CHTE;
++	rcar_pci_write_reg(pcie, val, PCIEDMCHSR(ch));
++
++	/* Set direction and start; preserve unused bits */
++	val = rcar_pci_read_reg(pcie, PCIEDMCHCR(ch));
++	if (req->direction == RCAR_PCIE_DMA_TO_PCIE)
++		val |= CHDIR;
++	else
++		val &= ~CHDIR;
++	val &= ~(CHCCE | CHT);
++	val |= CHE;
++	rcar_pci_write_reg(pcie, val, PCIEDMCHCR(ch));
++
++	req->status = -EINPROGRESS;
++
++	spin_unlock_irqrestore(&pcie->dma_lock, flags);
++}
++
++static irqreturn_t rcar_pcie_ep_dma_irq(int irq, void *data)
++{
++	struct rcar_pcie *pcie = data;
++	struct rcar_pcie_dma_req *req;
++	unsigned long chan_mask;
++	int ch;
++	u32 val, val2;
++	unsigned long flags;
++	int ret = IRQ_NONE;
++
++	spin_lock_irqsave(&pcie->dma_lock, flags);
++
++	for (chan_mask = pcie->dma_chan_busy;
++	     (ch = find_first_bit(&chan_mask, RCAR_PCIE_DMA_CHANNELS)) !=
++				RCAR_PCIE_DMA_CHANNELS;
++	     clear_bit(ch, &chan_mask)) {
++
++		val = rcar_pci_read_reg(pcie, PCIEDMCHSR(ch));
++		if (!(val & (CHTC | CHPEE | CHIBE | CHTE)))
++			continue;
++
++		/* writing 1 into CHTE does NOT clear interrupt if
++		 * channel is not disabled before that */
++		val2 = rcar_pci_read_reg(pcie, PCIEDMCHCR(ch));
++		val2 &= ~CHE;
++		rcar_pci_write_reg(pcie, val2, PCIEDMCHCR(ch));
++
++		rcar_pci_write_reg(pcie, val, PCIEDMCHSR(ch));
++
++		req = pcie->dma_req[ch];
++		BUG_ON(!req);
++		pcie->dma_req[ch] = NULL;
++		req->status = (val & CHTE) ? 0 : -EIO;
++		req->complete(req);
++
++		clear_bit(ch, &pcie->dma_chan_busy);
++		ret = IRQ_HANDLED;
++	}
++
++	if (ret == IRQ_HANDLED)
++		wake_up_all(&pcie->dma_chan_wait);
++
++	spin_unlock_irqrestore(&pcie->dma_lock, flags);
++
++	return ret;
++}
++
++static int rcar_pcie_ep_setup_dma(struct rcar_pcie *pcie)
++{
++	int ch;
++	u32 val;
++
++	spin_lock_init(&pcie->dma_lock);
++	init_waitqueue_head(&pcie->dma_chan_wait);
++
++	for (ch = 0; ch < RCAR_PCIE_DMA_CHANNELS; ch++) {
++		val = rcar_pci_read_reg(pcie, PCIEDMCHCR(ch));
++		val &= ~CHE;
++		rcar_pci_write_reg(pcie, val, PCIEDMCHCR(ch));
++	};
++
++	rcar_pci_write_reg(pcie, DMAE | ABT, PCIEDMAOR);
++
++	return devm_request_irq(pcie->dev, pcie->msi.irq2, rcar_pcie_ep_dma_irq,
++		IRQF_SHARED | IRQF_NO_THREAD, "rcar-pcie-ep-dma", pcie);
++}
++
+ static int rcar_pcie_probe(struct platform_device *pdev)
+ {
+ 	struct rcar_pcie *pcie;
+@@ -1305,9 +1682,16 @@ static int rcar_pcie_probe(struct platform_device *pdev)
+ 	pcie->dev = &pdev->dev;
+ 	platform_set_drvdata(pdev, pcie);
+ 
++	pcie->endpoint = of_property_read_bool(pdev->dev.of_node, "endpoint");
++	if (pcie->endpoint)
++		dev_info(&pdev->dev, "initializing endpoint mode\n");
++
+ 	INIT_LIST_HEAD(&pcie->resources);
+ 
+-	rcar_pcie_parse_request_of_pci_ranges(pcie);
++	if (!pcie->endpoint)
++		rcar_pcie_parse_request_of_pci_ranges(pcie);
++	else
++		rcar_pcie_ep_prepare_outbound(pcie);
+ 
+ 	pm_runtime_enable(pcie->dev);
+ 	err = pm_runtime_get_sync(pcie->dev);
+@@ -1319,16 +1703,21 @@ static int rcar_pcie_probe(struct platform_device *pdev)
+ 	err = rcar_pcie_get_resources(pdev, pcie);
+ 	if (err < 0) {
+ 		dev_err(&pdev->dev, "failed to request resources: %d\n", err);
+-		return err;
++		goto err_pm_put;
+ 	}
+ 
+-	 err = rcar_pcie_parse_map_dma_ranges(pcie, pdev->dev.of_node);
+-	 if (err)
+-		return err;
++	if (!pcie->endpoint)
++		err = rcar_pcie_parse_map_dma_ranges(pcie, pdev->dev.of_node);
++	else
++		err = rcar_pcie_ep_setup_inbound(pcie);
++	if (err)
++		goto err_pm_put;
+ 
+ 	of_id = of_match_device(rcar_pcie_of_match, pcie->dev);
+-	if (!of_id || !of_id->data)
+-		return -EINVAL;
++	if (!of_id || !of_id->data) {
++		err = -EINVAL;
++		goto err_pm_put;
++	}
+ 	hw_init_fn = of_id->data;
+ 
+ 	/* Failure to get a link might just be that no cards are inserted */
+@@ -1342,19 +1731,35 @@ static int rcar_pcie_probe(struct platform_device *pdev)
+ 	data = rcar_pci_read_reg(pcie, MACSR);
+ 	dev_info(&pdev->dev, "PCIe x%d: link up\n", (data >> 20) & 0x3f);
+ 
+-	if (IS_ENABLED(CONFIG_PCI_MSI)) {
+-		err = rcar_pcie_enable_msi(pcie);
+-		if (err < 0) {
+-			dev_err(&pdev->dev,
+-				"failed to enable MSI support: %d\n",
+-				err);
+-			goto err_pm_put;
++	if (!pcie->endpoint) {
++		if (IS_ENABLED(CONFIG_PCI_MSI)) {
++			err = rcar_pcie_enable_msi(pcie);
++			if (err < 0) {
++				dev_err(&pdev->dev,
++					"failed to enable MSI support: %d\n",
++					err);
++				goto err_pm_put;
++			}
+ 		}
+-	}
+ 
+-	err = rcar_pcie_enable(pcie);
+-	if (err)
+-		goto err_pm_put;
++		err = rcar_pcie_enable(pcie);
++		if (err)
++			goto err_pm_put;
++
++	} else {
++		err = rcar_pcie_ep_setup_irq(pcie);
++		if (err)
++			goto err_pm_put;
++
++		err = rcar_pcie_ep_setup_dma(pcie);
++		if (err)
++			goto err_pm_put;
++	
++#ifdef CONFIG_VIRTIO_RCAR_PCIE
++		pcie->vrp_host = vrp_host_create(&pdev->dev,
++				pcie->inbound_area, pcie->inbound_area_dma);
++#endif
++	}
+ 
+ 	return 0;
+ 
+@@ -1363,6 +1766,10 @@ err_pm_put:
+ 
+ err_pm_disable:
+ 	pm_runtime_disable(pcie->dev);
++
++	if (!pcie->endpoint)
++		rcar_pcie_release_of_pci_ranges(pcie);
++
+ 	return err;
+ }
+ 
+diff --git a/drivers/virtio/Kconfig b/drivers/virtio/Kconfig
+index 7759032..872de85 100644
+--- a/drivers/virtio/Kconfig
++++ b/drivers/virtio/Kconfig
+@@ -79,4 +79,11 @@ config VIRTIO_MMIO_CMDLINE_DEVICES
+ 
+ 	 If unsure, say 'N'.
+ 
++config VIRTIO_RCAR_PCIE
++	bool "Virtio devices over R-Car PCIe-to-PCIe connection"
++	depends on PCIE_RCAR && PCI_MSI
++	select VIRTIO
++	select VOP_BUS
++	select VOP
++
+ endmenu
+diff --git a/drivers/virtio/Makefile b/drivers/virtio/Makefile
+index 41e30e3..30eb8c9 100644
+--- a/drivers/virtio/Makefile
++++ b/drivers/virtio/Makefile
+@@ -3,5 +3,6 @@ obj-$(CONFIG_VIRTIO_MMIO) += virtio_mmio.o
+ obj-$(CONFIG_VIRTIO_PCI) += virtio_pci.o
+ virtio_pci-y := virtio_pci_modern.o virtio_pci_common.o
+ virtio_pci-$(CONFIG_VIRTIO_PCI_LEGACY) += virtio_pci_legacy.o
++obj-$(CONFIG_VIRTIO_RCAR_PCIE) += virtio_rcar_pcie.o
+ obj-$(CONFIG_VIRTIO_BALLOON) += virtio_balloon.o
+ obj-$(CONFIG_VIRTIO_INPUT) += virtio_input.o
+diff --git a/drivers/virtio/virtio_rcar_pcie.c b/drivers/virtio/virtio_rcar_pcie.c
+new file mode 100644
+index 0000000..8806df4
+--- /dev/null
++++ b/drivers/virtio/virtio_rcar_pcie.c
+@@ -0,0 +1,813 @@
++/*
++ * Virtio devices over R-Car PCIe-to-PCIe connection driver
++ *
++ * Copyright (C) 2017 Cogent Embedded, Inc.
++ *
++ * This program is free software; you can redistribute  it and/or modify it
++ * under  the terms of  the GNU General  Public License as published by the
++ * Free Software Foundation;  either version 2 of the  License, or (at your
++ * option) any later version.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/pci.h>
++#include <linux/io.h>
++#include <linux/interrupt.h>
++#include <linux/dma-mapping.h>
++#include <linux/workqueue.h>
++#include <linux/genalloc.h>
++#include <linux/virtio_rcar_pcie.h>
++
++#include "../misc/mic/bus/vop_bus.h"
++
++#define DRIVER_NAME	"vrp"
++
++struct vrp_comm {
++	
++	/* req - ack pairs for interrupts in both directions */
++	u32 h2g_req, h2g_ack, g2h_req, g2h_ack;
++
++	/* physical address of host-allocated memory (in host address space) */
++	dma_addr_t host_mem_addr;
++
++	/* physical address of guest-allocated memory (in guest address space) */
++	dma_addr_t guest_mem_addr;
++};
++
++
++struct vrp_irq_handler {
++	irq_handler_t handler;
++	void *data;
++};
++
++/* This corresponds to virtio guest, PCIe RC */
++struct vrp_guest {
++
++	struct pci_dev *pdev;
++
++	union {
++		struct vrp_comm __iomem *comm;
++		void __iomem *host_mem;
++	};
++	void *guest_mem;
++	dma_addr_t guest_mem_dma;
++
++	struct gen_pool *pool;
++
++	struct vrp_irq_handler ih[32];
++	u32 g2h_req, h2g_ack;
++	spinlock_t notify_lock;
++
++	struct work_struct init_work;
++
++	struct vop_device *vpdev;
++};
++
++/* This corresponds to virtio host, PCIe EP */
++struct vrp_host {
++
++	struct device *ep_dev;
++
++	union {
++		struct vrp_comm *comm;
++		void *host_mem;
++	};
++	dma_addr_t host_mem_dma;
++	void __iomem *guest_mem;
++
++	struct gen_pool *pool;
++
++	struct vrp_irq_handler ih[32];
++	spinlock_t notify_lock;
++
++	dma_addr_t guest_map[RCAR_PCIE_OUTBOUND_REGIONS];
++	unsigned int guest_map_use[RCAR_PCIE_OUTBOUND_REGIONS];
++	struct mutex guest_map_mutex;
++	wait_queue_head_t guest_map_wait;
++	bool guest_map_retry_flag;
++
++	struct work_struct init_work;
++
++	struct vop_device *vpdev;
++};
++
++
++static void vrp_guest_notify_host(struct vrp_guest *vg, int n)
++{
++	u32 ack;
++	u16 word;
++	unsigned long flags;
++
++	spin_lock_irqsave(&vg->notify_lock, flags);
++
++	ack = ioread32(&vg->comm->g2h_ack);
++	if (ack & (1 << n))
++		vg->g2h_req &= ~(1 << n);
++	else
++		vg->g2h_req |= (1 << n);
++	iowrite32(vg->g2h_req, &vg->comm->g2h_req);
++
++	if (pci_read_config_word(vg->pdev, PCI_COMMAND, &word) ==
++						PCIBIOS_SUCCESSFUL) {
++		word ^= PCI_COMMAND_INTX_DISABLE;
++		pci_write_config_word(vg->pdev, PCI_COMMAND, word);
++	}
++
++	spin_unlock_irqrestore(&vg->notify_lock, flags);
++}
++
++void vrp_host_notification(struct vrp_host *vh)
++{
++	u32 req, changed;
++
++	req = vh->comm->g2h_req;
++	changed = req ^ vh->comm->g2h_ack;
++	vh->comm->g2h_ack = req;
++
++	while (changed) {
++		int n = __ffs(changed);
++		changed &= ~(1 << n);
++		if (vh->ih[n].handler)
++			vh->ih[n].handler(n, vh->ih[n].data);
++	}
++}
++
++static void vrp_host_notify_guest(struct vrp_host *vh, int n)
++{
++	u32 ack;
++	unsigned long flags;
++
++	spin_lock_irqsave(&vh->notify_lock, flags);
++
++	ack = vh->comm->h2g_ack;
++	if (ack & (1 << n))
++		vh->comm->h2g_req &= ~(1 << n);
++	else
++		vh->comm->h2g_req |= (1 << n);
++
++	spin_unlock_irqrestore(&vh->notify_lock, flags);
++
++	rcar_pcie_ep_send_msi(vh->ep_dev, 0);
++}
++
++static irqreturn_t vrp_guest_notification(int irq, void *data)
++{
++	struct vrp_guest *vg = data;
++	u32 req, changed;
++
++	req = ioread32(&vg->comm->h2g_req);
++	changed = req ^ vg->h2g_ack;
++	vg->h2g_ack = req;
++	iowrite32(vg->h2g_ack, &vg->comm->h2g_ack);
++
++	while (changed) {
++		int n = __ffs(changed);
++		changed &= ~(1 << n);
++		if (vg->ih[n].handler)
++			vg->ih[n].handler(n, vg->ih[n].data);
++	}
++
++	return IRQ_HANDLED;
++}
++
++static void *vrp_guest_alloc_host_mappable_area(struct vrp_guest *vg,
++		size_t size, dma_addr_t *dma)
++{
++	void *addr = gen_pool_dma_alloc(vg->pool, size, dma);
++	if (addr)
++		memset(addr, 0, size);
++	return addr;
++}
++
++static void __iomem *vrp_host_map_guest_area(struct vrp_host *vh,
++		dma_addr_t addr, size_t size, size_t *mapped_size)
++{
++	dma_addr_t maddr;
++	size_t msize, tail, best_tail;
++	int i, best_i;
++
++	BUILD_BUG_ON(sizeof(dma_addr_t) != sizeof(size_t));
++
++retry:
++	mutex_lock(&vh->guest_map_mutex);
++
++	best_i = -1;
++	best_tail = 0;		/* kill warning */
++	for (i = 0; i < RCAR_PCIE_OUTBOUND_REGIONS; i++) {
++
++		msize = rcar_pcie_ep_outbound_size(vh->ep_dev, i);
++
++		if (vh->guest_map[i]) {
++
++			maddr = vh->guest_map[i];
++
++			/* covers new request completely? use it */
++			if (addr >= maddr && addr + size <= maddr + msize)
++				goto use;
++
++			/* complete mapping requested? not a candidate */
++			if (!mapped_size)
++				continue;
++
++			/* head not covered? not a candidate */
++			if (addr < maddr || addr >= maddr + msize)
++				continue;
++
++			tail = (addr + size) - (maddr + msize);
++			if (best_i < 0 || tail < best_tail) {
++				best_i = i;
++				best_tail = tail;
++			}
++
++		} else {
++
++			/* can cover completely? use it */
++			if ((addr & ~(msize - 1)) ==
++					((addr + size) & ~(msize - 1)))
++				goto use;
++			
++			/* complete mapping requested? not a candidate */
++			if (!mapped_size)
++				continue;
++
++			tail = (addr + size) - ((addr | (msize - 1)) + 1);
++			if (best_i < 0 || tail < best_tail) {
++				best_i = i;
++				best_tail = tail;
++			}
++		}
++	}
++
++	/* fould possibility for partial mapping? */
++	if (best_i > 0) {
++		i = best_i;
++		goto use;
++	}
++
++	/* no mapping available now - try waiting */
++
++	vh->guest_map_retry_flag = 0;
++	mutex_unlock(&vh->guest_map_mutex);
++	wait_event(vh->guest_map_wait, vh->guest_map_retry_flag);
++	goto retry;
++
++use:
++	if (!vh->guest_map_use[i]) {
++		vh->guest_map[i] = addr & ~(msize - 1);
++		rcar_pcie_ep_map_outbound(vh->ep_dev, i, vh->guest_map[i]);
++	}
++
++	vh->guest_map_use[i]++;
++	mutex_unlock(&vh->guest_map_mutex);
++	if (mapped_size) {
++		msize = rcar_pcie_ep_outbound_size(vh->ep_dev, i);
++		*mapped_size = min_t(size_t, size,
++					msize - (addr & (msize - 1)));
++	}
++	return rcar_pcie_ep_outbound_addr(vh->ep_dev, i) + (addr & (msize - 1));
++}
++
++static void vrp_host_unmap_guest_area(struct vrp_host *vh, void __iomem *addr)
++{
++	int i;
++
++	for (i = 0; i < RCAR_PCIE_OUTBOUND_REGIONS; i++) {
++		void __iomem *a = rcar_pcie_ep_outbound_addr(vh->ep_dev, i);
++		size_t s = rcar_pcie_ep_outbound_size(vh->ep_dev, i);
++
++		if (addr >= a && addr < a + s) {
++			mutex_lock(&vh->guest_map_mutex);
++			BUG_ON(vh->guest_map_use[i] == 0);
++			if (--vh->guest_map_use[i] == 0) {
++				vh->guest_map_retry_flag = 1;
++				wake_up_all(&vh->guest_map_wait);
++			}
++			mutex_unlock(&vh->guest_map_mutex);
++			return;
++		}
++	}
++
++	BUG();
++}
++
++static void vrp_guest_free_host_mappable_area(struct vrp_guest *vg,
++		void *addr, size_t size, dma_addr_t dma)
++{
++	gen_pool_free(vg->pool, (unsigned long)addr, size);
++}
++
++static void *vrp_host_alloc_guest_mappable_area(struct vrp_host *vh,
++		size_t size, dma_addr_t *dma)
++{
++	void *addr = gen_pool_dma_alloc(vh->pool, size, dma);
++	if (addr)
++		memset(addr, 0, size);
++	return addr;
++}
++
++static void __iomem *vrp_guest_map_host_area(struct vrp_guest *vg,
++		dma_addr_t host_addr, size_t size)
++{
++	if (host_addr >= vg->comm->host_mem_addr &&
++	    host_addr + size <= vg->comm->host_mem_addr + VRP_HOST_MEM_SIZE)
++		return vg->host_mem + (host_addr - vg->comm->host_mem_addr);
++	else
++		BUG();
++}
++
++static void vrp_guest_unmap_host_area(struct vrp_guest *vg, void __iomem *addr)
++{
++	BUG_ON(addr < vg->host_mem || addr >= vg->host_mem + VRP_HOST_MEM_SIZE);
++}
++
++static void vrp_host_free_guest_mappable_area(struct vrp_host *vh,
++		void *addr, size_t size, dma_addr_t dma)
++{
++	gen_pool_free(vh->pool, (unsigned long)addr, size);
++}
++
++static struct vrp_host *vpdev_to_vrp_host(struct vop_device *vpdev)
++{
++	return rcar_pcie_ep_get_vrp_host(vpdev->dev.parent);
++}
++
++static struct vrp_guest *vpdev_to_vrp_guest(struct vop_device *vpdev)
++{
++	return dev_get_drvdata(vpdev->dev.parent);
++}
++
++static void vrp_setup_dma(struct vop_device *vpdev)
++{
++	vpdev->dev.dma_mask = &vpdev->dev.coherent_dma_mask;
++	vpdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
++	arch_setup_dma_ops(&vpdev->dev, 0, DMA_BIT_MASK(32) + 1, NULL, false);
++	vpdev->use_dma_api = true;
++}
++
++struct vrp_dma_req {
++	struct completion completion;
++	struct rcar_pcie_dma_req req;
++};
++
++static void vrp_dma_complete(struct rcar_pcie_dma_req *req)
++{
++	struct vrp_dma_req *vreq = container_of(req, struct vrp_dma_req, req);
++	complete(&vreq->completion);
++}
++
++static int vrp_host_sync_dma(struct vrp_host *vh, int direction,
++		dma_addr_t host_addr, dma_addr_t guest_addr, size_t size)
++{
++	struct vrp_dma_req vreq;
++	int ret;
++
++	init_completion(&vreq.completion);
++	vreq.req.remote_addr = guest_addr;
++	vreq.req.local_addr = host_addr;
++	vreq.req.size = size;
++	vreq.req.direction = direction;
++	vreq.req.complete = vrp_dma_complete;
++
++	rcar_pcie_ep_submit_dma_req(vh->ep_dev, &vreq.req);
++	ret = wait_for_completion_interruptible(&vreq.completion);
++	return ret ? ret : vreq.req.status;
++}
++
++/* FIXME: next_db / request_irq interface is racy */
++
++static int vrp_host_next_db(struct vop_device *vpdev)
++{
++	struct vrp_host *vh = vpdev_to_vrp_host(vpdev);
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(vh->ih); i++)
++		if (!vh->ih[i].handler)
++			break;
++
++	return i;
++}
++
++static int vrp_guest_next_db(struct vop_device *vpdev)
++{
++	struct vrp_guest *vg = vpdev_to_vrp_guest(vpdev);
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(vg->ih); i++)
++		if (!vg->ih[i].handler)
++			break;
++
++	return i;
++}
++
++static struct mic_irq *vrp_host_request_irq(struct vop_device *vpdev,
++		irqreturn_t (*handler)(int irq, void *data),
++		const char *name, void *data, int db)
++{
++	struct vrp_host *vh = vpdev_to_vrp_host(vpdev);
++
++	if (db < 0 || db >= ARRAY_SIZE(vh->ih) || vh->ih[db].handler)
++		return NULL;
++
++	vh->ih[db].handler = handler;
++	vh->ih[db].data = data;
++	return (struct mic_irq *)&vh->ih[db];
++}
++
++static struct mic_irq *vrp_guest_request_irq(struct vop_device *vpdev,
++		irqreturn_t (*handler)(int irq, void *data),
++		const char *name, void *data, int db)
++{
++	struct vrp_guest *vg = vpdev_to_vrp_guest(vpdev);
++
++	if (db < 0 || db >= ARRAY_SIZE(vg->ih) || vg->ih[db].handler)
++		return NULL;
++
++	vg->ih[db].handler = handler;
++	vg->ih[db].data = data;
++	return (struct mic_irq *)&vg->ih[db];
++}
++
++static void vrp_host_free_irq(struct vop_device *vpdev,
++		struct mic_irq *cookie, void *data)
++{
++	struct vrp_host *vh = vpdev_to_vrp_host(vpdev);
++	struct vrp_irq_handler *ih = (struct vrp_irq_handler *)cookie;
++	int i = ih - vh->ih;
++
++	if (WARN_ON(i < 0 || i >= ARRAY_SIZE(vh->ih) ||
++			!vh->ih[i].handler || vh->ih[i].data != data))
++		return;
++
++	vh->ih[i].handler = NULL;
++}
++
++static void vrp_guest_free_irq(struct vop_device *vpdev,
++		struct mic_irq *cookie, void *data)
++{
++	struct vrp_guest *vg = vpdev_to_vrp_guest(vpdev);
++	struct vrp_irq_handler *ih = (struct vrp_irq_handler *)cookie;
++	int i = ih - vg->ih;
++
++	if (WARN_ON(i < 0 || i >= ARRAY_SIZE(vg->ih) ||
++			!vg->ih[i].handler || vg->ih[i].data != data))
++		return;
++
++	vg->ih[i].handler = NULL;
++}
++
++static void vrp_ack_interrupt(struct vop_device *vpdev, int num)
++{
++}
++
++static void __iomem *vrp_guest_get_remote_dp(struct vop_device *vpdev)
++{
++	struct vrp_guest *vg = vpdev_to_vrp_guest(vpdev);
++
++	return vg->host_mem + PAGE_SIZE;
++}
++
++static void *vrp_host_get_dp(struct vop_device *vpdev)
++{
++	struct vrp_host *vh = vpdev_to_vrp_host(vpdev);
++
++	return vh->host_mem + PAGE_SIZE;
++}
++
++static void vrp_host_send_intr(struct vop_device *vpdev, int db)
++{
++	struct vrp_host *vh = vpdev_to_vrp_host(vpdev);
++
++	vrp_host_notify_guest(vh, db);
++}
++
++static void vrp_guest_send_intr(struct vop_device *vpdev, int db)
++{
++	struct vrp_guest *vg = vpdev_to_vrp_guest(vpdev);
++
++	vrp_guest_notify_host(vg, db);
++}
++
++static void __iomem *vrp_host_map(struct vop_device *vpdev,
++		dma_addr_t guest_addr, size_t size)
++{
++	struct vrp_host *vh = vpdev_to_vrp_host(vpdev);
++
++	return vrp_host_map_guest_area(vh, guest_addr, size, NULL);
++}
++
++static void __iomem *vrp_host_map_foreign(struct vop_device *vpdev,
++		dma_addr_t guest_addr, size_t size, size_t *mapped)
++{
++	struct vrp_host *vh = vpdev_to_vrp_host(vpdev);
++
++	return vrp_host_map_guest_area(vh, guest_addr, size, mapped);
++}
++
++static void __iomem *vrp_guest_map(struct vop_device *vpdev,
++		dma_addr_t guest_addr, size_t size)
++{
++	struct vrp_guest *vg = vpdev_to_vrp_guest(vpdev);
++
++	return vrp_guest_map_host_area(vg, guest_addr, size);
++}
++
++static void vrp_host_unmap(struct vop_device *vpdev, void __iomem *addr)
++{
++	struct vrp_host *vh = vpdev_to_vrp_host(vpdev);
++
++	vrp_host_unmap_guest_area(vh, addr);
++}
++
++static void vrp_guest_unmap(struct vop_device *vpdev, void __iomem *addr)
++{
++	struct vrp_guest *vg = vpdev_to_vrp_guest(vpdev);
++
++	vrp_guest_unmap_host_area(vg, addr);
++}
++
++static void *vrp_host_alloc_mappable(struct vop_device *vpdev, size_t len,
++		dma_addr_t *dma)
++{
++	struct vrp_host *vh = vpdev_to_vrp_host(vpdev);
++
++	return vrp_host_alloc_guest_mappable_area(vh, len, dma);
++}
++
++static void *vrp_guest_alloc_mappable(struct vop_device *vpdev, size_t len,
++		dma_addr_t *dma)
++{
++	struct vrp_guest *vg = vpdev_to_vrp_guest(vpdev);
++
++	return vrp_guest_alloc_host_mappable_area(vg, len, dma);
++}
++
++static void vrp_host_free_mappable(struct vop_device *vpdev, size_t len,
++		void *addr, dma_addr_t dma)
++{
++	struct vrp_host *vh = vpdev_to_vrp_host(vpdev);
++
++	return vrp_host_free_guest_mappable_area(vh, addr, len, dma);
++}
++
++static void vrp_guest_free_mappable(struct vop_device *vpdev, size_t len,
++		void *addr, dma_addr_t dma)
++{
++	struct vrp_guest *vg = vpdev_to_vrp_guest(vpdev);
++
++	return vrp_guest_free_host_mappable_area(vg, addr, len, dma);
++}
++
++static int vrp_host_mmap(struct vop_device *vpdev, struct vm_area_struct *vma,
++		void *addr)
++{
++	struct vrp_host *vh = vpdev_to_vrp_host(vpdev);
++	unsigned long size = vma->vm_end - vma->vm_start;
++	unsigned long save_pgoff;
++	int ret;
++
++	if (addr >= vh->host_mem &&
++	    addr + size <= vh->host_mem + VRP_HOST_MEM_SIZE) {
++		save_pgoff = vma->vm_pgoff;
++		vma->vm_pgoff = (addr - vh->host_mem) >> PAGE_SHIFT;
++		ret = dma_mmap_coherent(vh->ep_dev, vma,
++			vh->host_mem, vh->host_mem_dma, VRP_HOST_MEM_SIZE);
++		vma->vm_pgoff = save_pgoff;
++		return ret;
++	} else
++		return -EINVAL;
++}
++
++static int vrp_host_dma_from_remote(struct vop_device *vpdev,
++		dma_addr_t local_pa, dma_addr_t remote_pa, size_t size)
++{
++	struct vrp_host *vh = vpdev_to_vrp_host(vpdev);
++
++	return vrp_host_sync_dma(vh, RCAR_PCIE_DMA_FROM_PCIE,
++			local_pa, remote_pa, size);
++}
++
++static int vrp_host_dma_to_remote(struct vop_device *vpdev,
++		dma_addr_t remote_pa, dma_addr_t local_pa, size_t size)
++{
++	struct vrp_host *vh = vpdev_to_vrp_host(vpdev);
++
++	return vrp_host_sync_dma(vh, RCAR_PCIE_DMA_TO_PCIE,
++			local_pa, remote_pa, size);
++}
++
++static size_t vrp_host_dma_alignment(struct vop_device *vpdev)
++{
++	return RCAR_PCIE_DMA_ALIGNMENT;
++}
++
++static struct vop_hw_ops vrp_host_vop_ops = {
++	.setup_dma = vrp_setup_dma,
++	.next_db = vrp_host_next_db,
++	.request_irq = vrp_host_request_irq,
++	.free_irq = vrp_host_free_irq,
++	.ack_interrupt = vrp_ack_interrupt,
++	.get_dp = vrp_host_get_dp,
++	.send_intr = vrp_host_send_intr,
++	.map = vrp_host_map,
++	.map_foreign = vrp_host_map_foreign,
++	.unmap = vrp_host_unmap,
++	.unmap_foreign = vrp_host_unmap,
++	.alloc_mappable = vrp_host_alloc_mappable,
++	.free_mappable = vrp_host_free_mappable,
++	.mmap = vrp_host_mmap,
++	.dma_from_remote = vrp_host_dma_from_remote,
++	.dma_to_remote = vrp_host_dma_to_remote,
++	.dma_alignment = vrp_host_dma_alignment,
++};
++
++static struct vop_hw_ops vrp_guest_vop_ops = {
++	.setup_dma = vrp_setup_dma,
++	.next_db = vrp_guest_next_db,
++	.request_irq = vrp_guest_request_irq,
++	.free_irq = vrp_guest_free_irq,
++	.ack_interrupt = vrp_ack_interrupt,
++	.get_remote_dp = vrp_guest_get_remote_dp,
++	.send_intr = vrp_guest_send_intr,
++	.map = vrp_guest_map,
++	.unmap = vrp_guest_unmap,
++	.alloc_mappable = vrp_guest_alloc_mappable,
++	.free_mappable = vrp_guest_free_mappable,
++};
++
++static irqreturn_t vrp_host_init_handler(int irq, void *data)
++{
++	struct vrp_host *vh = data;
++
++	pr_info("vrp Host: got signal from Guest\n");
++
++	vh->ih[0].handler = NULL;
++	schedule_work(&vh->init_work);
++
++	return IRQ_HANDLED;
++}
++
++static void vrp_host_init_work(struct work_struct *work)
++{
++	struct vrp_host *vh = container_of(work, struct vrp_host, init_work);
++
++	/* Keep entire area mapped to make future map requests from this
++	 * area always succeed without delay */
++	vh->guest_mem = vrp_host_map_guest_area(vh,
++			vh->comm->guest_mem_addr, VRP_GUEST_MEM_SIZE, NULL);
++
++	vh->vpdev = vop_register_device(vh->ep_dev, VOP_DEV_TRNSP,
++			&vrp_host_vop_ops, 1);
++	if (IS_ERR(vh->vpdev)) {
++		pr_err("vrp Host: could not register VOP device, err = %d\n",
++				(int)PTR_ERR(vh->vpdev));
++		return;
++	}
++
++	vrp_host_notify_guest(vh, 0);
++}
++
++static irqreturn_t vrp_guest_init_handler(int irq, void *data)
++{
++	struct vrp_guest *vg = data;
++
++	pr_info("vrp Guest: got signal from Host\n");
++
++	vg->ih[0].handler = NULL;
++	schedule_work(&vg->init_work);
++
++	return IRQ_HANDLED;
++}
++
++static void vrp_guest_init_work(struct work_struct *work)
++{
++	struct vrp_guest *vg = container_of(work, struct vrp_guest, init_work);
++
++	vg->vpdev = vop_register_device(&vg->pdev->dev, VOP_DEV_TRNSP,
++			&vrp_guest_vop_ops, 0);
++	if (IS_ERR(vg->vpdev))
++		pr_err("vrp Guest: could not register VOP device, err = %d\n",
++				(int)PTR_ERR(vg->vpdev));
++}
++
++static int vrp_guest_probe(struct pci_dev *pdev,
++		const struct pci_device_id *id)
++{
++	struct vrp_guest *vg;
++	int ret;
++
++	vg = devm_kzalloc(&pdev->dev, sizeof(*vg), GFP_KERNEL);
++	if (!vg)
++		return -ENOMEM;
++	vg->pdev = pdev;
++
++	dev_set_drvdata(&pdev->dev, vg);
++
++	vg->guest_mem = dmam_alloc_coherent(&pdev->dev, VRP_GUEST_MEM_SIZE,
++			&vg->guest_mem_dma, GFP_KERNEL);
++	if (!vg->guest_mem)
++		return -ENOMEM;
++
++	vg->pool = devm_gen_pool_create(&pdev->dev, PAGE_SHIFT, -1, NULL);
++	if (!vg->pool)
++		return -ENOMEM;
++	ret = gen_pool_add_virt(vg->pool, (unsigned long)vg->guest_mem,
++			vg->guest_mem_dma, VRP_GUEST_MEM_SIZE, -1);
++	if (ret)
++		return ret;
++
++	spin_lock_init(&vg->notify_lock);
++
++	ret = pcim_enable_device(pdev);
++	if (ret)
++		return ret;
++
++	pci_set_master(pdev);
++
++	vg->host_mem = pcim_iomap(pdev, 0, VRP_HOST_MEM_SIZE);
++	if (!vg->host_mem)
++		return -ENOMEM;
++
++	ret = pci_enable_msi(pdev);
++	if (ret < 0)
++		return ret;
++
++	ret = devm_request_irq(&pdev->dev, pdev->irq,
++			vrp_guest_notification, 0, DRIVER_NAME, vg);
++	if (ret)
++		goto err_irq;
++
++	iowrite32(vg->guest_mem_dma, &vg->comm->guest_mem_addr);
++
++	INIT_WORK(&vg->init_work, vrp_guest_init_work);
++	vg->ih[0].handler = vrp_guest_init_handler;
++	vg->ih[0].data = vg;
++
++	vrp_guest_notify_host(vg, 0);
++
++	return 0;
++
++err_irq:
++	pci_disable_msi(pdev);
++	return ret;
++}
++
++static const struct pci_device_id vrp_ids[] = {
++	{ PCI_VENDOR_ID_RENESAS, VIRTIO_RCAR_PCIE_DEVICE_ID,
++		PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
++	{ 0, }
++};
++
++static struct pci_driver vrp_pcidrv = {
++	.name = DRIVER_NAME,
++	.probe = vrp_guest_probe,
++	.id_table = vrp_ids,
++};
++
++static int vrp_init(void)
++{
++	int ret;
++
++	/* ignore result: init is ok even if no device */
++	ret = pci_register_driver(&vrp_pcidrv);
++	(void)ret;
++
++	return 0;
++}
++late_initcall(vrp_init);
++
++struct vrp_host *vrp_host_create(struct device *ep_dev,
++		void *ep_memory, dma_addr_t ep_memory_dma)
++{
++	struct vrp_host *vh;
++	int ret;
++
++	vh = devm_kzalloc(ep_dev, sizeof(*vh), GFP_KERNEL);
++	if (!vh)
++		return NULL;
++
++	vh->ep_dev = ep_dev;
++	vh->host_mem = ep_memory;
++	vh->comm->host_mem_addr = vh->host_mem_dma = ep_memory_dma;
++
++	spin_lock_init(&vh->notify_lock);
++	mutex_init(&vh->guest_map_mutex);
++	init_waitqueue_head(&vh->guest_map_wait);
++
++	vh->pool = devm_gen_pool_create(ep_dev, PAGE_SHIFT, -1, NULL);
++	if (!vh->pool)
++		return NULL;
++	ret = gen_pool_add_virt(vh->pool,
++			(unsigned long)vh->host_mem + 2 * PAGE_SIZE,
++			vh->host_mem_dma + 2 * PAGE_SIZE,
++			VRP_HOST_MEM_SIZE - 2 * PAGE_SIZE,
++			-1);
++	if (ret)
++		return NULL;
++
++	INIT_WORK(&vh->init_work, vrp_host_init_work);
++	vh->ih[0].handler = vrp_host_init_handler;
++	vh->ih[0].data = vh;
++
++	return vh;
++}
+diff --git a/include/linux/virtio_rcar_pcie.h b/include/linux/virtio_rcar_pcie.h
+new file mode 100644
+index 0000000..909f520
+--- /dev/null
++++ b/include/linux/virtio_rcar_pcie.h
+@@ -0,0 +1,49 @@
++/*
++ * Virtio devices over R-Car PCIe-to-PCIe connection driver include file
++ *
++ * Copyright (C) 2017 Cogent Embedded, Inc.
++ *
++ * This program is free software; you can redistribute  it and/or modify it
++ * under  the terms of  the GNU General  Public License as published by the
++ * Free Software Foundation;  either version 2 of the  License, or (at your
++ * option) any later version.
++ */
++
++#ifndef VIRTIO_RCAR_PCIE_H
++#define VIRTIO_RCAR_PCIE_H
++
++#define VIRTIO_RCAR_PCIE_DEVICE_ID	0x0017
++
++#define VRP_HOST_MEM_SIZE	(512 * 1024)	/* power of two */
++#define VRP_GUEST_MEM_SIZE	(512 * 1024)
++
++struct vrp_host;
++
++struct vrp_host *vrp_host_create(struct device *ep_dev,
++		void *ep_memory, dma_addr_t ep_memory_dma);
++
++void vrp_host_notification(struct vrp_host *vh);
++
++struct vrp_host *rcar_pcie_ep_get_vrp_host(struct device *ep_dev);
++
++int rcar_pcie_ep_send_msi(struct device *ep_dev, int msi);
++
++#define RCAR_PCIE_OUTBOUND_REGIONS	4
++void __iomem *rcar_pcie_ep_outbound_addr(struct device *ep_dev, int win);
++size_t rcar_pcie_ep_outbound_size(struct device *ep_dev, int win);
++void rcar_pcie_ep_map_outbound(struct device *ep_dev, int win, dma_addr_t remote_addr);
++
++#define RCAR_PCIE_DMA_TO_PCIE		0
++#define RCAR_PCIE_DMA_FROM_PCIE		1
++struct rcar_pcie_dma_req {
++	dma_addr_t remote_addr;
++	dma_addr_t local_addr;
++	size_t size;
++	int direction;
++	int status;
++	void (*complete)(struct rcar_pcie_dma_req *req);
++};
++void rcar_pcie_ep_submit_dma_req(struct device *ep_dev, struct rcar_pcie_dma_req *req);
++#define RCAR_PCIE_DMA_ALIGNMENT		8
++
++#endif
+-- 
+1.9.1
+

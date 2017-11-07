@@ -1,0 +1,106 @@
+From 5ca9b37a1c6c2e95c4c0c3a2bc8207904e0a50cb Mon Sep 17 00:00:00 2001
+From: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+Date: Wed, 22 Mar 2017 16:42:48 +0300
+Subject: [PATCH] mic: vop: fix crashes on access to VOP debugfs entries
+
+- since entries use structures savailable only at Host side, create
+  entries only at Host side,
+
+- use i/o accessors to access used ring that is located at Guest side,
+
+- remove bogus hotplug check call - on Host side it is invalid and
+  immediately causes a crash.
+
+Signed-off-by: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+---
+ drivers/misc/mic/vop/vop_debugfs.c | 22 ++++++++++------------
+ drivers/misc/mic/vop/vop_main.c    |  2 +-
+ 2 files changed, 11 insertions(+), 13 deletions(-)
+
+diff --git a/drivers/misc/mic/vop/vop_debugfs.c b/drivers/misc/mic/vop/vop_debugfs.c
+index ab43884e5cd7..1522db5951a6 100644
+--- a/drivers/misc/mic/vop/vop_debugfs.c
++++ b/drivers/misc/mic/vop/vop_debugfs.c
+@@ -97,7 +97,6 @@ static int vop_dp_show(struct seq_file *s, void *pos)
+ 		seq_printf(s, "c2h doorbell %d ", dc->c2h_vdev_db);
+ 		seq_printf(s, "h2c doorbell %d\n", dc->h2c_vdev_db);
+ 	}
+-	schedule_work(&vi->hotplug_work);
+ 	return 0;
+ }
+ 
+@@ -122,13 +121,11 @@ static const struct file_operations dp_ops = {
+ static int vop_vdev_info_show(struct seq_file *s, void *unused)
+ {
+ 	struct vop_info *vi = s->private;
+-	struct list_head *pos, *tmp;
+ 	struct vop_vdev *vdev;
+ 	int i, j;
+ 
+ 	mutex_lock(&vi->vop_mutex);
+-	list_for_each_safe(pos, tmp, &vi->vdev_list) {
+-		vdev = list_entry(pos, struct vop_vdev, list);
++	list_for_each_entry(vdev, &vi->vdev_list, list) {
+ 		seq_printf(s, "VDEV type %d state %s in %ld out %ld in_dma %ld out_dma %ld\n",
+ 			   vdev->virtio_id,
+ 			   vop_vdevup(vdev) ? "UP" : "DOWN",
+@@ -139,7 +136,7 @@ static int vop_vdev_info_show(struct seq_file *s, void *unused)
+ 		for (i = 0; i < MIC_MAX_VRINGS; i++) {
+ 			struct vring_desc *desc;
+ 			struct vring_avail *avail;
+-			struct vring_used *used;
++			struct vring_used __iomem *used;
+ 			struct vop_vringh *vvr = &vdev->vvr[i];
+ 			struct vringh *vrh = &vvr->vrh;
+ 			int num = vrh->vring.num;
+@@ -174,19 +171,20 @@ static int vop_vdev_info_show(struct seq_file *s, void *unused)
+ 			for (j = 0; j < num; j++)
+ 				seq_printf(s, "avail ring[%d] %d\n",
+ 					   j, avail->ring[j]);
+-			used = vrh->vring.used;
++			used = (struct vring_used __iomem *)vrh->vring.used;
+ 			seq_printf(s, "used flags 0x%x idx %d\n",
+-				   vringh16_to_cpu(vrh, used->flags),
+-				   vringh16_to_cpu(vrh, used->idx) & (num - 1));
++				   vringh16_to_cpu(vrh, ioread16(&used->flags)),
++				   vringh16_to_cpu(vrh,
++					   ioread16(&used->idx)) & (num - 1));
+ 			seq_printf(s, "used flags 0x%x idx %d\n",
+-				   vringh16_to_cpu(vrh, used->flags),
+-				   vringh16_to_cpu(vrh, used->idx));
++				   vringh16_to_cpu(vrh, ioread16(&used->flags)),
++				   vringh16_to_cpu(vrh, ioread16(&used->idx)));
+ 			for (j = 0; j < num; j++)
+ 				seq_printf(s, "used ring[%d] id %d len %d\n",
+ 					   j, vringh32_to_cpu(vrh,
+-							      used->ring[j].id),
++						ioread32(&used->ring[j].id)),
+ 					   vringh32_to_cpu(vrh,
+-							   used->ring[j].len));
++						ioread32(&used->ring[j].len)));
+ 		}
+ 	}
+ 	mutex_unlock(&vi->vop_mutex);
+diff --git a/drivers/misc/mic/vop/vop_main.c b/drivers/misc/mic/vop/vop_main.c
+index edf4d49fc95d..78ee8513f5ab 100644
+--- a/drivers/misc/mic/vop/vop_main.c
++++ b/drivers/misc/mic/vop/vop_main.c
+@@ -678,6 +678,7 @@ static int vop_driver_probe(struct vop_device *vpdev)
+ 		rc = vop_host_init(vi);
+ 		if (rc < 0)
+ 			goto free;
++		vop_init_debugfs(vi);
+ 	} else {
+ 		struct mic_bootparam __iomem *bootparam;
+ 
+@@ -695,7 +696,6 @@ static int vop_driver_probe(struct vop_device *vpdev)
+ 		bootparam = vpdev->hw_ops->get_remote_dp(vpdev);
+ 		iowrite8(vi->h2c_config_db, &bootparam->h2c_config_db);
+ 	}
+-	vop_init_debugfs(vi);
+ 	return 0;
+ free:
+ 	kfree(vi);
+-- 
+2.11.0
+

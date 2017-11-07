@@ -1,0 +1,66 @@
+From 2fc4f16b075264fae016ea3db1f1f81d30cb0ab6 Mon Sep 17 00:00:00 2001
+From: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+Date: Tue, 13 Dec 2016 18:08:39 +0300
+Subject: [PATCH 102/104] ASoC: Modify check condition of multiple bindings of
+ components
+
+https://patchwork.kernel.org/patch/7385501/
+...and some more hacks to bind one component (with several DAIs)
+to more than one sound card.
+
+Signed-off-by: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+---
+ sound/soc/generic/simple-card.c |   12 ------------
+ sound/soc/soc-core.c            |    6 ++++--
+ 2 files changed, 4 insertions(+), 14 deletions(-)
+
+diff --git a/sound/soc/generic/simple-card.c b/sound/soc/generic/simple-card.c
+index 2389ab4..d76f0d1 100644
+--- a/sound/soc/generic/simple-card.c
++++ b/sound/soc/generic/simple-card.c
+@@ -415,18 +415,6 @@ static int asoc_simple_card_dai_link_of(struct device_node *node,
+ 		dai_link->codec_dai_name,
+ 		dai_props->codec_dai.sysclk);
+ 
+-	/*
+-	 * In soc_bind_dai_link() will check cpu name after
+-	 * of_node matching if dai_link has cpu_dai_name.
+-	 * but, it will never match if name was created by
+-	 * fmt_single_name() remove cpu_dai_name if cpu_args
+-	 * was 0. See:
+-	 *	fmt_single_name()
+-	 *	fmt_multiple_name()
+-	 */
+-	if (!cpu_args)
+-		dai_link->cpu_dai_name = NULL;
+-
+ dai_link_of_err:
+ 	of_node_put(cpu);
+ 	of_node_put(codec);
+diff --git a/sound/soc/soc-core.c b/sound/soc/soc-core.c
+index 16369ca..899d013 100644
+--- a/sound/soc/soc-core.c
++++ b/sound/soc/soc-core.c
+@@ -1373,7 +1373,8 @@ static int soc_probe_component(struct snd_soc_card *card,
+ 		return 0;
+ 
+ 	if (component->card) {
+-		if (component->card != card) {
++		if (component->card != card &&
++		    component->registered_as_component) {
+ 			dev_err(component->dev,
+ 				"Trying to bind component to card \"%s\" but is already bound to card \"%s\"\n",
+ 				card->name, component->card->name);
+@@ -3049,7 +3050,8 @@ int snd_soc_register_component(struct device *dev,
+ 		goto err_free;
+ 
+ 	cmpnt->ignore_pmdown_time = true;
+-	cmpnt->registered_as_component = true;
++	if (num_dai == 1)
++		cmpnt->registered_as_component = true;
+ 
+ 	ret = snd_soc_register_dais(cmpnt, dai_drv, num_dai, true);
+ 	if (ret < 0) {
+-- 
+1.7.10.4
+

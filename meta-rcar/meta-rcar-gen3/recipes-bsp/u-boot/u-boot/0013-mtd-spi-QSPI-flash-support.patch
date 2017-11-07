@@ -1,0 +1,1763 @@
+From 423d01a1b367d82a3855972483530968309cbbd4 Mon Sep 17 00:00:00 2001
+From: Daisuke Matsushita <daisuke.matsushita.ns@hitachi.com>
+Date: Tue, 21 Mar 2017 15:05:15 +0900
+Subject: [PATCH] mtd: spi: Add QSPI flash
+
+This supports QSPI flash
+
+Signed-off-by: Vladimir Barinov <vladimir.barinov@cogentembedded.com>
+---
+ arch/arm/include/asm/arch-rcar_gen3/rcar-base.h |    1 
+ drivers/mtd/spi/sf.c                            |   15 
+ drivers/mtd/spi/sf_internal.h                   |  195 ++++++---
+ drivers/mtd/spi/sf_ops.c                        |   64 +++
+ drivers/mtd/spi/sf_params.c                     |  249 +++++++-----
+ drivers/mtd/spi/sf_probe.c                      |   72 +--
+ drivers/spi/Makefile                            |    1 
+ drivers/spi/rcar_gen3_qspi.c                    |  484 ++++++++++++++++++++++++
+ drivers/spi/rcar_gen3_qspi.h                    |  301 ++++++++++++++
+ include/linux/bitops.h                          |    1 
+ include/spi.h                                   |   22 -
+ 11 files changed, 1191 insertions(+), 214 deletions(-)
+ create mode 100644 drivers/spi/rcar_gen3_qspi.c
+ create mode 100644 drivers/spi/rcar_gen3_qspi.h
+
+diff --git a/arch/arm/include/asm/arch-rcar_gen3/rcar-base.h b/arch/arm/include/asm/arch-rcar_gen3/rcar-base.h
+index 59d34b8..b75e4fb 100644
+--- a/arch/arm/include/asm/arch-rcar_gen3/rcar-base.h
++++ b/arch/arm/include/asm/arch-rcar_gen3/rcar-base.h
+@@ -18,6 +18,7 @@
+ #define LBSC_BASE		0xEE220200
+ #define TMU_BASE		0xE61E0000
+ #define GPIO5_BASE		0xE6055000
++#define SH_QSPI_BASE		0xEE200000
+ 
+ /* SCIF */
+ #define SCIF0_BASE		0xE6E60000
+diff --git a/drivers/mtd/spi/sf.c b/drivers/mtd/spi/sf.c
+index 664e860..4e27bab 100644
+--- a/drivers/mtd/spi/sf.c
++++ b/drivers/mtd/spi/sf.c
+@@ -8,7 +8,11 @@
+  */
+ 
+ #include <common.h>
++#if defined(CONFIG_RCAR_GEN3)
++#include "../../spi/rcar_gen3_qspi.h"
++#else
+ #include <spi.h>
++#endif
+ 
+ static int spi_flash_read_write(struct spi_slave *spi,
+ 				const u8 *cmd, size_t cmd_len,
+@@ -25,16 +29,13 @@ static int spi_flash_read_write(struct spi_slave *spi,
+ 	if (data_len == 0)
+ 		flags |= SPI_XFER_END;
+ 
+-	ret = spi_xfer(spi, cmd_len * 8, cmd, NULL, flags);
++	ret = spi_xfer_cmd(spi, *cmd);
+ 	if (ret) {
+-		debug("SF: Failed to send command (%zu bytes): %d\n",
+-		      cmd_len, ret);
++		debug("SF: Failed to send command (%zu bytes): %d\n", cmd_len, ret);
+ 	} else if (data_len != 0) {
+-		ret = spi_xfer(spi, data_len * 8, data_out, data_in,
+-					SPI_XFER_END);
++		ret = spi_xfer(spi, data_len * 8, data_out, data_in, flags|SPI_XFER_END);
+ 		if (ret)
+-			debug("SF: Failed to transfer %zu bytes of data: %d\n",
+-			      data_len, ret);
++			debug("SF: Failed to transfer %zu bytes of data: %d\n", data_len, ret);
+ 	}
+ 
+ 	return ret;
+diff --git a/drivers/mtd/spi/sf_internal.h b/drivers/mtd/spi/sf_internal.h
+index 785f7a9..aacee1a 100644
+--- a/drivers/mtd/spi/sf_internal.h
++++ b/drivers/mtd/spi/sf_internal.h
+@@ -12,6 +12,7 @@
+ 
+ #include <linux/types.h>
+ #include <linux/compiler.h>
++#include <spi_flash.h>
+ 
+ /* Dual SPI flash memories - see SPI_COMM_DUAL_... */
+ enum spi_dual_flash {
+@@ -20,33 +21,6 @@ enum spi_dual_flash {
+ 	SF_DUAL_PARALLEL_FLASH	= 1 << 1,
+ };
+ 
+-/* Enum list - Full read commands */
+-enum spi_read_cmds {
+-	ARRAY_SLOW		= 1 << 0,
+-	ARRAY_FAST		= 1 << 1,
+-	DUAL_OUTPUT_FAST	= 1 << 2,
+-	DUAL_IO_FAST		= 1 << 3,
+-	QUAD_OUTPUT_FAST	= 1 << 4,
+-	QUAD_IO_FAST		= 1 << 5,
+-};
+-
+-/* Normal - Extended - Full command set */
+-#define RD_NORM	(ARRAY_SLOW | ARRAY_FAST)
+-#define RD_EXTN	(RD_NORM | DUAL_OUTPUT_FAST | DUAL_IO_FAST)
+-#define RD_FULL	(RD_EXTN | QUAD_OUTPUT_FAST | QUAD_IO_FAST)
+-
+-/* sf param flags */
+-enum {
+-	SECT_4K		= 1 << 0,
+-	SECT_32K	= 1 << 1,
+-	E_FSR		= 1 << 2,
+-	SST_BP		= 1 << 3,
+-	SST_WP		= 1 << 4,
+-	WR_QPP		= 1 << 5,
+-};
+-
+-#define SST_WR		(SST_BP | SST_WP)
+-
+ #define SPI_FLASH_3B_ADDR_LEN		3
+ #define SPI_FLASH_CMD_LEN		(1 + SPI_FLASH_3B_ADDR_LEN)
+ #define SPI_FLASH_16MB_BOUN		0x1000000
+@@ -57,31 +31,101 @@ enum {
+ #define SPI_FLASH_CFI_MFR_MACRONIX	0xc2
+ #define SPI_FLASH_CFI_MFR_WINBOND	0xef
+ 
+-/* Erase commands */
+-#define CMD_ERASE_4K			0x20
+-#define CMD_ERASE_32K			0x52
+-#define CMD_ERASE_CHIP			0xc7
+-#define CMD_ERASE_64K			0xd8
++/* Read Device ID */
++#define CMD_READ_ID			0x9f
++#define CMD_READ_SFDP			0x5a
++#define CMD_READ_QUAD_ID		0xaf
+ 
+-/* Write commands */
++/* Register Access */
++#define CMD_READ_STATUS			0x05
++#define CMD_READ_STATUS2		0x07
++#define CMD_READ_STATUS1		0x35
++#define CMD_READ_CONFIG			0x35
++#define CMD_READ_ANY_REG		0x65
+ #define CMD_WRITE_STATUS		0x01
+-#define CMD_PAGE_PROGRAM		0x02
+ #define CMD_WRITE_DISABLE		0x04
+-#define CMD_READ_STATUS		0x05
+-#define CMD_QUAD_PAGE_PROGRAM		0x32
+-#define CMD_READ_STATUS1		0x35
+ #define CMD_WRITE_ENABLE		0x06
+-#define CMD_READ_CONFIG		0x35
+-#define CMD_FLAG_STATUS		0x70
++#define CMD_WRITE_ANY_REG		0x71
++#define CMD_CLSR			0x30
++#define CMD_CLSR_ALT			0x82
++#define CMD_4BYTE_ADDR_MODE		0xb7
++#define CMD_SET_BURST_LEN		0xc0
++#define CMD_EVALUATE_ERASE_STATUS	0xd0
++#define CMD_ECC_READ			0x19
++#define CMD_ECC_READ_ADDR4		0x18
++#define CMD_DLPRD			0x41
++#define CMD_PNVDLR			0x43
++#define CMD_WVDLR			0x4a
+ 
+ /* Read commands */
+ #define CMD_READ_ARRAY_SLOW		0x03
++#define CMD_READ_ARRAY_SLOW_ADDR4	0x13
+ #define CMD_READ_ARRAY_FAST		0x0b
++#define CMD_READ_ARRAY_FAST_ADDR4	0x0c
+ #define CMD_READ_DUAL_OUTPUT_FAST	0x3b
+ #define CMD_READ_DUAL_IO_FAST		0xbb
++#define CMD_READ_DUAL_IO_FAST_ADDR4	0xbc
+ #define CMD_READ_QUAD_OUTPUT_FAST	0x6b
+ #define CMD_READ_QUAD_IO_FAST		0xeb
+-#define CMD_READ_ID			0x9f
++#define CMD_READ_QUAD_IO_FAST_ADDR4	0xec
++#define CMD_READ_QUAD_IO_DDR		0xed
++#define CMD_READ_QUAD_IO_DDR_ADDR4	0xee
++
++/* Write commands */
++#define CMD_PAGE_PROGRAM		0x02
++#define CMD_PAGE_PROGRAM_ADDR4		0x12
++#define CMD_QUAD_PAGE_PROGRAM		0x32
++#define CMD_FLAG_STATUS			0x70
++
++/* Erase commands */
++#define CMD_ERASE_4K			0x20
++#define CMD_ERASE_4K_ADDR4		0x21
++#define CMD_ERASE_32K			0x52
++#define CMD_ERASE_CHIP			0xc7
++#define CMD_ERASE_64K			0xd8
++#define CMD_ERASE_256K_ADDR4		0xdc
++#define CMD_BULK_ERASE			0x60
++#define CMD_BULK_ERASE_ALT		0xc7
++
++/* Erase Program / Suspend Program  */
++#define CMD_EPS				0x75
++#define CMD_EPS_ALT			0x85
++#define CMD_EPS_ALT2			0xb0
++#define CMD_EPR				0x7a
++#define CMD_EPR_ALT			0x8a
++#define CMD_EPR_ALT2			0x30
++
++/* One Time Program Array */
++#define CMD_OTP_PROGRAM			0x42
++#define CMD_OTP_READ			0x4b
++
++/* Advanced Sector Protection */
++#define CMD_DYB_READ			0xfa
++#define CMD_DYB_READ_ADDR4		0xe0
++#define CMD_DYB_WRITE			0xfb
++#define CMD_DYB_WRITE_ADDR4		0xe1
++#define CMD_PPB_READ			0xfc
++#define CMD_PPB_READ_ADDR4		0xe2
++#define CMD_PPB_PROGRAM			0xfd
++#define CMD_PPB_PROGRAM_ADDR4		0xe3
++#define CMD_PPB_ERASE			0xe4
++#define CMD_ASP_READ			0x2b
++#define CMD_ASP_PROGRAM			0x2f
++#define CMD_PPB_LOCKBIT_READ		0xa7
++#define CMD_PPB_LOCKBIT_WRITE		0xa6
++#define CMD_PASSWD_READ			0xe7
++#define CMD_PASSWD_PROGRAM		0xe8
++#define CMD_PASSWD_UNLOCK		0xe9
++
++/* Reset */
++#define CMD_SOFT_RESET_ENABLE		0x66
++#define CMD_SOFT_RESET			0x99
++#define CMD_LEGACY_SOFT_RESET		0xf0
++#define CMD_MODE_BIT_RESET		0xff
++
++/* DPD */
++#define CMD_ENT_DEEP_POWER_DOWN		0xb9
++#define CMD_REL_DEEP_POWER_DOWN		0xab
+ 
+ /* Bank addr access commands */
+ #ifdef CONFIG_SPI_FLASH_BAR
+@@ -94,13 +138,22 @@ enum {
+ /* Common status */
+ #define STATUS_WIP			(1 << 0)
+ #define STATUS_QEB_WINSPAN		(1 << 1)
+-#define STATUS_QEB_MXIC		(1 << 6)
++#define STATUS_QEB_MXIC			(1 << 6)
+ #define STATUS_PEC			(1 << 7)
+ 
+ #ifdef CONFIG_SYS_SPI_ST_ENABLE_WP_PIN
+ #define STATUS_SRWD			(1 << 7) /* SR write protect */
+ #endif
+ 
++/* Status Register 1(SR1V) */
++#define SR1V_WEL			(1 << 1)
++#define SR1V_WIP			(1 << 0)
++
++/* Status Register 2(SR2V) */
++#define SR2V_ESTAT			(1 << 2)
++#define SR2V_ES				(1 << 1)
++#define SR2V_PS				(1 << 0)
++
+ /* Flash timeout values */
+ #define SPI_FLASH_PROG_TIMEOUT		(2 * CONFIG_SYS_HZ)
+ #define SPI_FLASH_PAGE_ERASE_TIMEOUT		(5 * CONFIG_SYS_HZ)
+@@ -117,25 +170,43 @@ int sst_write_bp(struct spi_flash *flash, u32 offset, size_t len,
+ 		const void *buf);
+ #endif
+ 
+-/**
+- * struct spi_flash_params - SPI/QSPI flash device params structure
+- *
+- * @name:		Device name ([MANUFLETTER][DEVTYPE][DENSITY][EXTRAINFO])
+- * @jedec:		Device jedec ID (0x[1byte_manuf_id][2byte_dev_id])
+- * @ext_jedec:		Device ext_jedec ID
+- * @sector_size:	Sector size of this device
+- * @nr_sectors:	No.of sectors on this device
+- * @e_rd_cmd:		Enum list for read commands
+- * @flags:		Important param, for flash specific behaviour
+- */
++#define JEDEC_MFR(info)		((info)->id[0])
++#define JEDEC_ID(info)		(((info)->id[1]) << 8 | ((info)->id[2]))
++#define JEDEC_EXT(info)		(((info)->id[3]) << 8 | ((info)->id[4]))
++#define JEDEC_FID(info)		((info)->id[5])
++#define SPI_FLASH_MAX_ID_LEN	6
++
+ struct spi_flash_params {
+-	const char *name;
+-	u32 jedec;
+-	u16 ext_jedec;
+-	u32 sector_size;
+-	u32 nr_sectors;
+-	u8 e_rd_cmd;
+-	u16 flags;
++	/* Device name ([MANUFLETTER][DEVTYPE][DENSITY][EXTRAINFO]) */
++	const char	*name;
++
++	/*
++	 * This array stores the ID bytes.
++	 * The first three bytes are the JEDIC ID.
++	 * JEDEC ID zero means "no ID" (mostly older chips).
++	 */
++	u8		id[SPI_FLASH_MAX_ID_LEN];
++	u8		id_len;
++
++	/*
++	 * The size listed here is what works with SPINOR_OP_SE, which isn't
++	 * necessarily called a "sector" by the vendor.
++	 */
++	u32		sector_size;
++	u32		n_sectors;
++
++	u16		page_size;
++
++	u16		flags;
++#define SECT_4K			BIT(0)	/* CMD_ERASE_4K works uniformly */
++#define E_FSR			BIT(1)	/* use flag status register for */
++#define SST_WR			BIT(2)	/* use SST byte/word programming */
++#define WR_QPP			BIT(3)	/* use Quad Page Program */
++#define RD_QUAD			BIT(4)	/* use Quad Read */
++#define RD_DUAL			BIT(5)	/* use Dual Read */
++#define RD_QUADIO		BIT(6)	/* use Quad IO Read */
++#define RD_DUALIO		BIT(7)	/* use Dual IO Read */
++#define RD_FULL			(RD_QUAD | RD_DUAL | RD_QUADIO | RD_DUALIO)
+ };
+ 
+ extern const struct spi_flash_params spi_flash_params_table[];
+@@ -164,6 +235,12 @@ int spi_flash_cmd_erase_ops(struct spi_flash *flash, u32 offset, size_t len);
+ /* Read the status register */
+ int spi_flash_cmd_read_status(struct spi_flash *flash, u8 *rs);
+ 
++/* Read the status register2 */
++int spi_flash_cmd_read_status2(struct spi_flash *flash, u8 *rs);
++
++/* Evaluate Erase Status */
++int spi_flash_cmd_evaluate_erase_status(struct spi_flash *flash, u32 addr);
++
+ /* Program the status register */
+ int spi_flash_cmd_write_status(struct spi_flash *flash, u8 ws);
+ 
+diff --git a/drivers/mtd/spi/sf_ops.c b/drivers/mtd/spi/sf_ops.c
+index 34bc54e..6af38c1 100644
+--- a/drivers/mtd/spi/sf_ops.c
++++ b/drivers/mtd/spi/sf_ops.c
+@@ -11,7 +11,11 @@
+ #include <common.h>
+ #include <errno.h>
+ #include <malloc.h>
++#if defined(CONFIG_RCAR_GEN3)
++#include "../../spi/rcar_gen3_qspi.h"
++#else
+ #include <spi.h>
++#endif
+ #include <spi_flash.h>
+ #include <watchdog.h>
+ 
+@@ -40,6 +44,38 @@ int spi_flash_cmd_read_status(struct spi_flash *flash, u8 *rs)
+ 	return 0;
+ }
+ 
++int spi_flash_cmd_read_status2(struct spi_flash *flash, u8 *rs)
++{
++	int ret;
++	u8 cmd;
++
++	cmd = CMD_READ_STATUS2;
++	ret = spi_flash_read_common(flash, &cmd, 1, rs, 1);
++	if (ret < 0) {
++		debug("SF: fail to read status register2\n");
++		return ret;
++	}
++
++	return 0;
++}
++
++int spi_flash_cmd_evaluate_erase_status(struct spi_flash *flash, u32 addr)
++{
++	int ret;
++	u8 cmd;
++
++	cmd = CMD_EVALUATE_ERASE_STATUS;
++	spi_set_addr(addr & 0x00ffffff);
++
++	ret = spi_xfer_cmd(flash->spi, (int)cmd);
++	if (ret < 0) {
++		debug("SF: fail to Evaluate Erase Status\n");
++		return ret;
++	}
++
++	return 0;
++}
++
+ int spi_flash_cmd_write_status(struct spi_flash *flash, u8 ws)
+ {
+ 	u8 cmd;
+@@ -158,7 +194,10 @@ int spi_flash_cmd_wait_ready(struct spi_flash *flash, unsigned long timeout)
+ {
+ 	struct spi_slave *spi = flash->spi;
+ 	unsigned long timebase;
++#ifdef CONFIG_SF_DUAL_FLASH
+ 	unsigned long flags = SPI_XFER_BEGIN;
++#endif
++
+ 	int ret;
+ 	u8 status;
+ 	u8 check_status = 0x0;
+@@ -174,7 +213,7 @@ int spi_flash_cmd_wait_ready(struct spi_flash *flash, unsigned long timeout)
+ 	if (spi->flags & SPI_XFER_U_PAGE)
+ 		flags |= SPI_XFER_U_PAGE;
+ #endif
+-	ret = spi_xfer(spi, 8, &cmd, NULL, flags);
++	ret = spi_xfer_cmd(spi, cmd);
+ 	if (ret) {
+ 		debug("SF: fail to read %s status register\n",
+ 		      cmd == CMD_READ_STATUS ? "read" : "flag");
+@@ -250,6 +289,8 @@ int spi_flash_cmd_erase_ops(struct spi_flash *flash, u32 offset, size_t len)
+ 	u32 erase_size, erase_addr;
+ 	u8 cmd[SPI_FLASH_CMD_LEN];
+ 	int ret = -1;
++	u8 read_sts;
++	int wait_msec, wait_interval;
+ 
+ 	erase_size = flash->erase_size;
+ 	if (offset % erase_size || len % erase_size) {
+@@ -270,6 +311,7 @@ int spi_flash_cmd_erase_ops(struct spi_flash *flash, u32 offset, size_t len)
+ 		if (ret < 0)
+ 			return ret;
+ #endif
++		spi_set_addr(erase_addr);
+ 		spi_flash_addr(erase_addr, cmd);
+ 
+ 		debug("SF: erase %2x %2x %2x %2x (%x)\n", cmd[0], cmd[1],
+@@ -285,6 +327,24 @@ int spi_flash_cmd_erase_ops(struct spi_flash *flash, u32 offset, size_t len)
+ 		len -= erase_size;
+ 	}
+ 
++	/* Wait for Erase Complete */
++	wait_msec = 0;
++	wait_interval = 100;
++	while (wait_msec < 3000) {			/* Max 3sec */
++		mdelay(wait_interval);
++		ret = spi_flash_cmd_evaluate_erase_status(flash, offset-erase_size);
++		WaitReadyDevice(flash->spi);
++		ret = spi_flash_cmd_read_status2(flash, &read_sts);
++		if (read_sts & SR2V_ESTAT) {
++			break;
++		}
++		wait_msec += wait_interval;
++	}
++
++	if ((ret != 0) || (read_sts != SR2V_ESTAT)) {
++		ret = -1;
++	}
++
+ 	return ret;
+ }
+ 
+@@ -319,6 +379,7 @@ int spi_flash_cmd_write_ops(struct spi_flash *flash, u32 offset,
+ 			chunk_len = min(chunk_len,
+ 					(size_t)flash->spi->max_write_size);
+ 
++		spi_set_addr(write_addr);
+ 		spi_flash_addr(write_addr, cmd);
+ 
+ 		debug("SF: 0x%p => cmd = { 0x%02x 0x%02x%02x%02x } chunk_len = %zu\n",
+@@ -409,6 +470,7 @@ int spi_flash_cmd_read_ops(struct spi_flash *flash, u32 offset,
+ 		else
+ 			read_len = remain_len;
+ 
++		spi_set_addr(read_addr);
+ 		spi_flash_addr(read_addr, cmd);
+ 
+ 		ret = spi_flash_read_common(flash, cmd, cmdsz, data, read_len);
+diff --git a/drivers/mtd/spi/sf_params.c b/drivers/mtd/spi/sf_params.c
+index c12e8c6..bd19bfb 100644
+--- a/drivers/mtd/spi/sf_params.c
++++ b/drivers/mtd/spi/sf_params.c
+@@ -12,129 +12,172 @@
+ 
+ #include "sf_internal.h"
+ 
+-/* SPI/QSPI flash device params structure */
++/* Used when the "_ext_id" is two bytes at most */
++#define INFO(_jedec_id, _ext_id, _sector_size, _n_sectors, _flags)	\
++		.id = {							\
++			((_jedec_id) >> 16) & 0xff,			\
++			((_jedec_id) >> 8) & 0xff,			\
++			(_jedec_id) & 0xff,				\
++			((_ext_id) >> 8) & 0xff,			\
++			(_ext_id) & 0xff,				\
++			},						\
++		.id_len = (!(_jedec_id) ? 0 : (3 + ((_ext_id) ? 2 : 0))),	\
++		.sector_size = (_sector_size),				\
++		.n_sectors = (_n_sectors),				\
++		.page_size = 256,					\
++		.flags = (_flags),
++
++#define INFO6(_jedec_id, _ext_id, _sector_size, _n_sectors, _flags)	\
++		.id = {							\
++			((_jedec_id) >> 16) & 0xff,			\
++			((_jedec_id) >> 8) & 0xff,			\
++			(_jedec_id) & 0xff,				\
++			((_ext_id) >> 16) & 0xff,			\
++			((_ext_id) >> 8) & 0xff,			\
++			(_ext_id) & 0xff,				\
++			},						\
++		.id_len = 6,						\
++		.sector_size = (_sector_size),				\
++		.n_sectors = (_n_sectors),				\
++		.page_size = 256,					\
++		.flags = (_flags),
++
+ const struct spi_flash_params spi_flash_params_table[] = {
+ #ifdef CONFIG_SPI_FLASH_ATMEL		/* ATMEL */
+-	{"AT45DB011D",	   0x1f2200, 0x0,	64 * 1024,     4, RD_NORM,		    SECT_4K},
+-	{"AT45DB021D",	   0x1f2300, 0x0,	64 * 1024,     8, RD_NORM,		    SECT_4K},
+-	{"AT45DB041D",	   0x1f2400, 0x0,	64 * 1024,     8, RD_NORM,		    SECT_4K},
+-	{"AT45DB081D",	   0x1f2500, 0x0,	64 * 1024,    16, RD_NORM,		    SECT_4K},
+-	{"AT45DB161D",	   0x1f2600, 0x0,	64 * 1024,    32, RD_NORM,		    SECT_4K},
+-	{"AT45DB321D",	   0x1f2700, 0x0,	64 * 1024,    64, RD_NORM,		    SECT_4K},
+-	{"AT45DB641D",	   0x1f2800, 0x0,	64 * 1024,   128, RD_NORM,		    SECT_4K},
+-	{"AT25DF321",      0x1f4701, 0x0,	64 * 1024,    64, RD_NORM,		    SECT_4K},
++	{"at45db011d",	   INFO(0x1f2200, 0x0, 64 * 1024,     4, SECT_4K) },
++	{"at45db021d",	   INFO(0x1f2300, 0x0, 64 * 1024,     8, SECT_4K) },
++	{"at45db041d",	   INFO(0x1f2400, 0x0, 64 * 1024,     8, SECT_4K) },
++	{"at45db081d",	   INFO(0x1f2500, 0x0, 64 * 1024,    16, SECT_4K) },
++	{"at45db161d",	   INFO(0x1f2600, 0x0, 64 * 1024,    32, SECT_4K) },
++	{"at45db321d",	   INFO(0x1f2700, 0x0, 64 * 1024,    64, SECT_4K) },
++	{"at45db641d",	   INFO(0x1f2800, 0x0, 64 * 1024,   128, SECT_4K) },
++	{"at25df321a",     INFO(0x1f4701, 0x0, 64 * 1024,    64, SECT_4K) },
++	{"at25df321",      INFO(0x1f4700, 0x0, 64 * 1024,    64, SECT_4K) },
++	{"at26df081a",     INFO(0x1f4501, 0x0, 64 * 1024,    16, SECT_4K) },
+ #endif
+ #ifdef CONFIG_SPI_FLASH_EON		/* EON */
+-	{"EN25Q32B",	   0x1c3016, 0x0,	64 * 1024,    64, RD_NORM,			  0},
+-	{"EN25Q64",	   0x1c3017, 0x0,	64 * 1024,   128, RD_NORM,		    SECT_4K},
+-	{"EN25Q128B",	   0x1c3018, 0x0,       64 * 1024,   256, RD_NORM,			  0},
+-	{"EN25S64",	   0x1c3817, 0x0,	64 * 1024,   128, RD_NORM,			  0},
++	{"en25q32b",	   INFO(0x1c3016, 0x0, 64 * 1024,    64, 0) },
++	{"en25q64",	   INFO(0x1c3017, 0x0, 64 * 1024,   128, SECT_4K) },
++	{"en25q128b",	   INFO(0x1c3018, 0x0, 64 * 1024,   256, 0) },
++	{"en25s64",	   INFO(0x1c3817, 0x0, 64 * 1024,   128, 0) },
+ #endif
+ #ifdef CONFIG_SPI_FLASH_GIGADEVICE	/* GIGADEVICE */
+-	{"GD25Q64B",	   0xc84017, 0x0,	64 * 1024,   128, RD_NORM,		    SECT_4K},
+-	{"GD25LQ32",	   0xc86016, 0x0,	64 * 1024,    64, RD_NORM,		    SECT_4K},
++	{"gd25q64b",	   INFO(0xc84017, 0x0, 64 * 1024,   128, SECT_4K) },
++	{"gd25lq32",	   INFO(0xc86016, 0x0, 64 * 1024,    64, SECT_4K) },
++#endif
++#ifdef CONFIG_SPI_FLASH_ISSI		/* ISSI */
++	{"is25lp032",	   INFO(0x9d6016, 0x0, 64 * 1024,    64, 0) },
++	{"is25lp064",	   INFO(0x9d6017, 0x0, 64 * 1024,   128, 0) },
++	{"is25lp128",	   INFO(0x9d6018, 0x0, 64 * 1024,   256, 0) },
+ #endif
+ #ifdef CONFIG_SPI_FLASH_MACRONIX	/* MACRONIX */
+-	{"MX25L2006E",	   0xc22012, 0x0,	64 * 1024,     4, RD_NORM,			  0},
+-	{"MX25L4005",	   0xc22013, 0x0,	64 * 1024,     8, RD_NORM,			  0},
+-	{"MX25L8005",	   0xc22014, 0x0,	64 * 1024,    16, RD_NORM,			  0},
+-	{"MX25L1605D",	   0xc22015, 0x0,	64 * 1024,    32, RD_NORM,			  0},
+-	{"MX25L3205D",	   0xc22016, 0x0,	64 * 1024,    64, RD_NORM,			  0},
+-	{"MX25L6405D",	   0xc22017, 0x0,	64 * 1024,   128, RD_NORM,			  0},
+-	{"MX25L12805",	   0xc22018, 0x0,	64 * 1024,   256, RD_FULL,		     WR_QPP},
+-	{"MX25L25635F",	   0xc22019, 0x0,	64 * 1024,   512, RD_FULL,		     WR_QPP},
+-	{"MX25L51235F",	   0xc2201a, 0x0,	64 * 1024,  1024, RD_FULL,		     WR_QPP},
+-	{"MX25L12855E",	   0xc22618, 0x0,	64 * 1024,   256, RD_FULL,		     WR_QPP},
++	{"mx25l2006e",	   INFO(0xc22012, 0x0, 64 * 1024,     4, 0) },
++	{"mx25l4005",	   INFO(0xc22013, 0x0, 64 * 1024,     8, 0) },
++	{"mx25l8005",	   INFO(0xc22014, 0x0, 64 * 1024,    16, 0) },
++	{"mx25l1605d",	   INFO(0xc22015, 0x0, 64 * 1024,    32, 0) },
++	{"mx25l3205d",	   INFO(0xc22016, 0x0, 64 * 1024,    64, 0) },
++	{"mx25l6405d",	   INFO(0xc22017, 0x0, 64 * 1024,   128, 0) },
++	{"mx25l12805",	   INFO(0xc22018, 0x0, 64 * 1024,   256, RD_FULL | WR_QPP) },
++	{"mx25l25635f",	   INFO(0xc22019, 0x0, 64 * 1024,   512, RD_FULL | WR_QPP) },
++	{"mx25l51235f",	   INFO(0xc2201a, 0x0, 64 * 1024,  1024, RD_FULL | WR_QPP) },
++	{"mx25l12855e",	   INFO(0xc22618, 0x0, 64 * 1024,   256, RD_FULL | WR_QPP) },
++	{"mx66u51235f",    INFO(0xc2253a, 0x0, 64 * 1024,  1024, RD_FULL | WR_QPP) },
++	{"mx66l1g45g",     INFO(0xc2201b, 0x0, 64 * 1024,  2048, RD_FULL | WR_QPP) },
+ #endif
+ #ifdef CONFIG_SPI_FLASH_SPANSION	/* SPANSION */
+-	{"S25FL008A",	   0x010213, 0x0,	64 * 1024,    16, RD_NORM,			  0},
+-	{"S25FL016A",	   0x010214, 0x0,	64 * 1024,    32, RD_NORM,			  0},
+-	{"S25FL032A",	   0x010215, 0x0,	64 * 1024,    64, RD_NORM,			  0},
+-	{"S25FL064A",	   0x010216, 0x0,	64 * 1024,   128, RD_NORM,			  0},
+-	{"S25FL116K",	   0x014015, 0x0,	64 * 1024,   128, RD_NORM,			  0},
+-	{"S25FL164K",	   0x014017, 0x0140,	64 * 1024,   128, RD_NORM,			  0},
+-	{"S25FL128P_256K", 0x012018, 0x0300,   256 * 1024,    64, RD_FULL,		     WR_QPP},
+-	{"S25FL128P_64K",  0x012018, 0x0301,    64 * 1024,   256, RD_FULL,		     WR_QPP},
+-	{"S25FL032P",	   0x010215, 0x4d00,    64 * 1024,    64, RD_FULL,		     WR_QPP},
+-	{"S25FL064P",	   0x010216, 0x4d00,    64 * 1024,   128, RD_FULL,		     WR_QPP},
+-	{"S25FL128S_256K", 0x012018, 0x4d00,   256 * 1024,    64, RD_FULL,		     WR_QPP},
+-	{"S25FL128S_64K",  0x012018, 0x4d01,    64 * 1024,   256, RD_FULL,		     WR_QPP},
+-	{"S25FL256S_256K", 0x010219, 0x4d00,   256 * 1024,   128, RD_FULL,		     WR_QPP},
+-	{"S25FL256S_64K",  0x010219, 0x4d01,	64 * 1024,   512, RD_FULL,		     WR_QPP},
+-	{"S25FL512S_256K", 0x010220, 0x4d00,   256 * 1024,   256, RD_FULL,		     WR_QPP},
+-	{"S25FL512S_64K",  0x010220, 0x4d01,    64 * 1024,  1024, RD_FULL,		     WR_QPP},
+-	{"S25FL512S_512K", 0x010220, 0x4f00,   256 * 1024,   256, RD_FULL,		     WR_QPP},
++	{"s25fl008a",	   INFO(0x010213, 0x0, 64 * 1024,    16, 0) },
++	{"s25fl016a",	   INFO(0x010214, 0x0, 64 * 1024,    32, 0) },
++	{"s25fl032a",	   INFO(0x010215, 0x0, 64 * 1024,    64, 0) },
++	{"s25fl064a",	   INFO(0x010216, 0x0, 64 * 1024,   128, 0) },
++	{"s25fl116k",	   INFO(0x014015, 0x0, 64 * 1024,   128, 0) },
++	{"s25fl164k",	   INFO(0x014017, 0x0140,  64 * 1024,   128, 0) },
++	{"s25fl128p_256k", INFO(0x012018, 0x0300, 256 * 1024,    64, RD_FULL | WR_QPP) },
++	{"s25fl128p_64k",  INFO(0x012018, 0x0301,  64 * 1024,   256, RD_FULL | WR_QPP) },
++	{"s25fl032p",	   INFO(0x010215, 0x4d00,  64 * 1024,    64, RD_FULL | WR_QPP) },
++	{"s25fl064p",	   INFO(0x010216, 0x4d00,  64 * 1024,   128, RD_FULL | WR_QPP) },
++	{"s25fl128s_256k", INFO(0x012018, 0x4d00, 256 * 1024,    64, RD_FULL | WR_QPP) },
++	{"s25fl128s_64k",  INFO(0x012018, 0x4d01,  64 * 1024,   256, RD_FULL | WR_QPP) },
++	{"s25fl256s_256k", INFO(0x010219, 0x4d00, 256 * 1024,   128, RD_FULL | WR_QPP) },
++	{"s25fl256s_64k",  INFO(0x010219, 0x4d01,  64 * 1024,   512, RD_FULL | WR_QPP) },
++	{"s25fs256s_64k",  INFO6(0x010219, 0x4d0181, 64 * 1024, 512, RD_FULL | WR_QPP | SECT_4K) },
++	{"s25fs512s",      INFO6(0x010220, 0x4d0081, 256 * 1024, 2048, RD_FULL | WR_QPP | SECT_4K) },
++	{"s25fl512s_256k", INFO(0x010220, 0x4d00, 256 * 1024,   256, RD_FULL | WR_QPP) },
++	{"s25fl512s_64k",  INFO(0x010220, 0x4d01,  64 * 1024,  1024, RD_FULL | WR_QPP) },
++	{"s25fl512s_512k", INFO(0x010220, 0x4f00, 256 * 1024,   256, RD_FULL | WR_QPP) },
+ #endif
+ #ifdef CONFIG_SPI_FLASH_STMICRO		/* STMICRO */
+-	{"M25P10",	   0x202011, 0x0,	32 * 1024,     4, RD_NORM,			  0},
+-	{"M25P20",	   0x202012, 0x0,       64 * 1024,     4, RD_NORM,			  0},
+-	{"M25P40",	   0x202013, 0x0,       64 * 1024,     8, RD_NORM,			  0},
+-	{"M25P80",	   0x202014, 0x0,       64 * 1024,    16, RD_NORM,			  0},
+-	{"M25P16",	   0x202015, 0x0,       64 * 1024,    32, RD_NORM,			  0},
+-	{"M25PE16",	   0x208015, 0x1000,    64 * 1024,    32, RD_NORM,			  0},
+-	{"M25PX16",	   0x207115, 0x1000,    64 * 1024,    32, RD_EXTN,			  0},
+-	{"M25P32",	   0x202016, 0x0,       64 * 1024,    64, RD_NORM,			  0},
+-	{"M25P64",	   0x202017, 0x0,       64 * 1024,   128, RD_NORM,			  0},
+-	{"M25P128",	   0x202018, 0x0,      256 * 1024,    64, RD_NORM,			  0},
+-	{"M25PX64",	   0x207117, 0x0,       64 * 1024,   128, RD_NORM,		    SECT_4K},
+-	{"N25Q32",	   0x20ba16, 0x0,       64 * 1024,    64, RD_FULL,	   WR_QPP | SECT_4K},
+-	{"N25Q32A",	   0x20bb16, 0x0,       64 * 1024,    64, RD_FULL,	   WR_QPP | SECT_4K},
+-	{"N25Q64",	   0x20ba17, 0x0,       64 * 1024,   128, RD_FULL,	   WR_QPP | SECT_4K},
+-	{"N25Q64A",	   0x20bb17, 0x0,       64 * 1024,   128, RD_FULL,	   WR_QPP | SECT_4K},
+-	{"N25Q128",	   0x20ba18, 0x0,       64 * 1024,   256, RD_FULL,		     WR_QPP},
+-	{"N25Q128A",	   0x20bb18, 0x0,       64 * 1024,   256, RD_FULL,		     WR_QPP},
+-	{"N25Q256",	   0x20ba19, 0x0,       64 * 1024,   512, RD_FULL,	   WR_QPP | SECT_4K},
+-	{"N25Q256A",	   0x20bb19, 0x0,       64 * 1024,   512, RD_FULL,	   WR_QPP | SECT_4K},
+-	{"N25Q512",	   0x20ba20, 0x0,       64 * 1024,  1024, RD_FULL, WR_QPP | E_FSR | SECT_4K},
+-	{"N25Q512A",	   0x20bb20, 0x0,       64 * 1024,  1024, RD_FULL, WR_QPP | E_FSR | SECT_4K},
+-	{"N25Q1024",	   0x20ba21, 0x0,       64 * 1024,  2048, RD_FULL, WR_QPP | E_FSR | SECT_4K},
+-	{"N25Q1024A",	   0x20bb21, 0x0,       64 * 1024,  2048, RD_FULL, WR_QPP | E_FSR | SECT_4K},
++	{"m25p10",	   INFO(0x202011, 0x0, 32 * 1024,     4, 0) },
++	{"m25p20",	   INFO(0x202012, 0x0, 64 * 1024,     4, 0) },
++	{"m25p40",	   INFO(0x202013, 0x0, 64 * 1024,     8, 0) },
++	{"m25p80",	   INFO(0x202014, 0x0, 64 * 1024,    16, 0) },
++	{"m25p16",	   INFO(0x202015, 0x0, 64 * 1024,    32, 0) },
++	{"m25pE16",	   INFO(0x208015, 0x1000, 64 * 1024, 32, 0) },
++	{"m25pX16",	   INFO(0x207115, 0x1000, 64 * 1024, 32, RD_QUAD | RD_DUAL) },
++	{"m25p32",	   INFO(0x202016, 0x0,  64 * 1024,    64, 0) },
++	{"m25p64",	   INFO(0x202017, 0x0,  64 * 1024,   128, 0) },
++	{"m25p128",	   INFO(0x202018, 0x0, 256 * 1024,    64, 0) },
++	{"m25pX64",	   INFO(0x207117, 0x0,  64 * 1024,   128, SECT_4K) },
++	{"n25q016a",       INFO(0x20bb15, 0x0,	64 * 1024,    32, SECT_4K) },
++	{"n25q32",	   INFO(0x20ba16, 0x0,  64 * 1024,    64, RD_FULL | WR_QPP | SECT_4K) },
++	{"n25q32a",	   INFO(0x20bb16, 0x0,  64 * 1024,    64, RD_FULL | WR_QPP | SECT_4K) },
++	{"n25q64",	   INFO(0x20ba17, 0x0,  64 * 1024,   128, RD_FULL | WR_QPP | SECT_4K) },
++	{"n25q64a",	   INFO(0x20bb17, 0x0,  64 * 1024,   128, RD_FULL | WR_QPP | SECT_4K) },
++	{"n25q128",	   INFO(0x20ba18, 0x0,  64 * 1024,   256, RD_FULL | WR_QPP) },
++	{"n25q128a",	   INFO(0x20bb18, 0x0,  64 * 1024,   256, RD_FULL | WR_QPP) },
++	{"n25q256",	   INFO(0x20ba19, 0x0,  64 * 1024,   512, RD_FULL | WR_QPP | SECT_4K) },
++	{"n25q256a",	   INFO(0x20bb19, 0x0,  64 * 1024,   512, RD_FULL | WR_QPP | SECT_4K) },
++	{"n25q512",	   INFO(0x20ba20, 0x0,  64 * 1024,  1024, RD_FULL | WR_QPP | E_FSR | SECT_4K) },
++	{"n25q512a",	   INFO(0x20bb20, 0x0,  64 * 1024,  1024, RD_FULL | WR_QPP | E_FSR | SECT_4K) },
++	{"n25q1024",	   INFO(0x20ba21, 0x0,  64 * 1024,  2048, RD_FULL | WR_QPP | E_FSR | SECT_4K) },
++	{"n25q1024a",	   INFO(0x20bb21, 0x0,  64 * 1024,  2048, RD_FULL | WR_QPP | E_FSR | SECT_4K) },
++	{"mt25qu02g",	   INFO(0x20bb22, 0x0,  64 * 1024,  4096, RD_FULL | WR_QPP | E_FSR | SECT_4K) },
++	{"mt25ql02g",	   INFO(0x20ba22, 0x0,  64 * 1024,  4096, RD_FULL | WR_QPP | E_FSR | SECT_4K) },
+ #endif
+ #ifdef CONFIG_SPI_FLASH_SST		/* SST */
+-	{"SST25VF040B",	   0xbf258d, 0x0,	64 * 1024,     8, RD_NORM,          SECT_4K | SST_WR},
+-	{"SST25VF080B",	   0xbf258e, 0x0,	64 * 1024,    16, RD_NORM,	    SECT_4K | SST_WR},
+-	{"SST25VF016B",	   0xbf2541, 0x0,	64 * 1024,    32, RD_NORM,	    SECT_4K | SST_WR},
+-	{"SST25VF032B",	   0xbf254a, 0x0,	64 * 1024,    64, RD_NORM,	    SECT_4K | SST_WR},
+-	{"SST25VF064C",	   0xbf254b, 0x0,	64 * 1024,   128, RD_NORM,		     SECT_4K},
+-	{"SST25WF512",	   0xbf2501, 0x0,	64 * 1024,     1, RD_NORM,	    SECT_4K | SST_WR},
+-	{"SST25WF010",	   0xbf2502, 0x0,	64 * 1024,     2, RD_NORM,          SECT_4K | SST_WR},
+-	{"SST25WF020",	   0xbf2503, 0x0,	64 * 1024,     4, RD_NORM,	    SECT_4K | SST_WR},
+-	{"SST25WF040",	   0xbf2504, 0x0,	64 * 1024,     8, RD_NORM,	    SECT_4K | SST_WR},
+-	{"SST25WF040B",	   0x621613, 0x0,	64 * 1024,     8, RD_NORM,	    SECT_4K | SST_WR},
+-	{"SST25WF080",	   0xbf2505, 0x0,	64 * 1024,    16, RD_NORM,	    SECT_4K | SST_WR},
++	{"sst25vf040b",	   INFO(0xbf258d, 0x0,	64 * 1024,     8, SECT_4K | SST_WR) },
++	{"sst25vf080b",	   INFO(0xbf258e, 0x0,	64 * 1024,    16, SECT_4K | SST_WR) },
++	{"sst25vf016b",	   INFO(0xbf2541, 0x0,	64 * 1024,    32, SECT_4K | SST_WR) },
++	{"sst25vf032b",	   INFO(0xbf254a, 0x0,	64 * 1024,    64, SECT_4K | SST_WR) },
++	{"sst25vf064c",	   INFO(0xbf254b, 0x0,	64 * 1024,   128, SECT_4K) },
++	{"sst25wf512",	   INFO(0xbf2501, 0x0,	64 * 1024,     1, SECT_4K | SST_WR) },
++	{"sst25wf010",	   INFO(0xbf2502, 0x0,	64 * 1024,     2, SECT_4K | SST_WR) },
++	{"sst25wf020",	   INFO(0xbf2503, 0x0,	64 * 1024,     4, SECT_4K | SST_WR) },
++	{"sst25wf040",	   INFO(0xbf2504, 0x0,	64 * 1024,     8, SECT_4K | SST_WR) },
++	{"sst25wf040b",	   INFO(0x621613, 0x0,	64 * 1024,     8, SECT_4K) },
++	{"sst25wf080",	   INFO(0xbf2505, 0x0,	64 * 1024,    16, SECT_4K | SST_WR) },
+ #endif
+ #ifdef CONFIG_SPI_FLASH_WINBOND		/* WINBOND */
+-	{"W25P80",	   0xef2014, 0x0,	64 * 1024,    16, RD_NORM,		           0},
+-	{"W25P16",	   0xef2015, 0x0,	64 * 1024,    32, RD_NORM,		           0},
+-	{"W25P32",	   0xef2016, 0x0,	64 * 1024,    64, RD_NORM,		           0},
+-	{"W25X40",	   0xef3013, 0x0,	64 * 1024,     8, RD_NORM,		     SECT_4K},
+-	{"W25X16",	   0xef3015, 0x0,	64 * 1024,    32, RD_NORM,		     SECT_4K},
+-	{"W25X32",	   0xef3016, 0x0,	64 * 1024,    64, RD_NORM,		     SECT_4K},
+-	{"W25X64",	   0xef3017, 0x0,	64 * 1024,   128, RD_NORM,		     SECT_4K},
+-	{"W25Q80BL",	   0xef4014, 0x0,	64 * 1024,    16, RD_FULL,	    WR_QPP | SECT_4K},
+-	{"W25Q16CL",	   0xef4015, 0x0,	64 * 1024,    32, RD_FULL,	    WR_QPP | SECT_4K},
+-	{"W25Q32BV",	   0xef4016, 0x0,	64 * 1024,    64, RD_FULL,	    WR_QPP | SECT_4K},
+-	{"W25Q64CV",	   0xef4017, 0x0,	64 * 1024,   128, RD_FULL,	    WR_QPP | SECT_4K},
+-	{"W25Q128BV",	   0xef4018, 0x0,	64 * 1024,   256, RD_FULL,	    WR_QPP | SECT_4K},
+-	{"W25Q256",	   0xef4019, 0x0,	64 * 1024,   512, RD_FULL,	    WR_QPP | SECT_4K},
+-	{"W25Q80BW",	   0xef5014, 0x0,	64 * 1024,    16, RD_FULL,	    WR_QPP | SECT_4K},
+-	{"W25Q16DW",	   0xef6015, 0x0,	64 * 1024,    32, RD_FULL,	    WR_QPP | SECT_4K},
+-	{"W25Q32DW",	   0xef6016, 0x0,	64 * 1024,    64, RD_FULL,	    WR_QPP | SECT_4K},
+-	{"W25Q64DW",	   0xef6017, 0x0,	64 * 1024,   128, RD_FULL,	    WR_QPP | SECT_4K},
+-	{"W25Q128FW",	   0xef6018, 0x0,	64 * 1024,   256, RD_FULL,	    WR_QPP | SECT_4K},
++	{"w25p80",	   INFO(0xef2014, 0x0,	64 * 1024,    16, 0) },
++	{"w25p16",	   INFO(0xef2015, 0x0,	64 * 1024,    32, 0) },
++	{"w25p32",	   INFO(0xef2016, 0x0,	64 * 1024,    64, 0) },
++	{"w25x40",	   INFO(0xef3013, 0x0,	64 * 1024,     8, SECT_4K) },
++	{"w25x16",	   INFO(0xef3015, 0x0,	64 * 1024,    32, SECT_4K) },
++	{"w25x32",	   INFO(0xef3016, 0x0,	64 * 1024,    64, SECT_4K) },
++	{"w25x64",	   INFO(0xef3017, 0x0,	64 * 1024,   128, SECT_4K) },
++	{"w25q80bl",	   INFO(0xef4014, 0x0,	64 * 1024,    16, RD_FULL | WR_QPP | SECT_4K) },
++	{"w25q16cl",	   INFO(0xef4015, 0x0,	64 * 1024,    32, RD_FULL | WR_QPP | SECT_4K) },
++	{"w25q32bv",	   INFO(0xef4016, 0x0,	64 * 1024,    64, RD_FULL | WR_QPP | SECT_4K) },
++	{"w25q64cv",	   INFO(0xef4017, 0x0,	64 * 1024,   128, RD_FULL | WR_QPP | SECT_4K) },
++	{"w25q128bv",	   INFO(0xef4018, 0x0,	64 * 1024,   256, RD_FULL | WR_QPP | SECT_4K) },
++	{"w25q256",	   INFO(0xef4019, 0x0,	64 * 1024,   512, RD_FULL | WR_QPP | SECT_4K) },
++	{"w25q80bw",	   INFO(0xef5014, 0x0,	64 * 1024,    16, RD_FULL | WR_QPP | SECT_4K) },
++	{"w25q16dw",	   INFO(0xef6015, 0x0,	64 * 1024,    32, RD_FULL | WR_QPP | SECT_4K) },
++	{"w25q32dw",	   INFO(0xef6016, 0x0,	64 * 1024,    64, RD_FULL | WR_QPP | SECT_4K) },
++	{"w25q64dw",	   INFO(0xef6017, 0x0,	64 * 1024,   128, RD_FULL | WR_QPP | SECT_4K) },
++	{"w25q128fw",	   INFO(0xef6018, 0x0,	64 * 1024,   256, RD_FULL | WR_QPP | SECT_4K) },
+ #endif
+ 	{},	/* Empty entry to terminate the list */
+ 	/*
+ 	 * Note:
+ 	 * Below paired flash devices has similar spi_flash params.
+-	 * (S25FL129P_64K, S25FL128S_64K)
+-	 * (W25Q80BL, W25Q80BV)
+-	 * (W25Q16CL, W25Q16DV)
+-	 * (W25Q32BV, W25Q32FV_SPI)
+-	 * (W25Q64CV, W25Q64FV_SPI)
+-	 * (W25Q128BV, W25Q128FV_SPI)
+-	 * (W25Q32DW, W25Q32FV_QPI)
+-	 * (W25Q64DW, W25Q64FV_QPI)
+-	 * (W25Q128FW, W25Q128FV_QPI)
++	 * (s25fl129p_64k, s25fl128s_64k)
++	 * (w25q80bl, w25q80bv)
++	 * (w25q16cl, w25q16dv)
++	 * (w25q32bv, w25q32fv_spi)
++	 * (w25q64cv, w25q64fv_spi)
++	 * (w25q128bv, w25q128fv_spi)
++	 * (w25q32dw, w25q32fv_qpi)
++	 * (w25q64dw, w25q64fv_qpi)
++	 * (w25q128fw, w25q128fv_qpi)
+ 	 */
+ };
+diff --git a/drivers/mtd/spi/sf_probe.c b/drivers/mtd/spi/sf_probe.c
+index 4103723..28ef787 100644
+--- a/drivers/mtd/spi/sf_probe.c
++++ b/drivers/mtd/spi/sf_probe.c
+@@ -21,16 +21,6 @@
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+-/* Read commands array */
+-static u8 spi_read_cmds_array[] = {
+-	CMD_READ_ARRAY_SLOW,
+-	CMD_READ_ARRAY_FAST,
+-	CMD_READ_DUAL_OUTPUT_FAST,
+-	CMD_READ_DUAL_IO_FAST,
+-	CMD_READ_QUAD_OUTPUT_FAST,
+-	CMD_READ_QUAD_IO_FAST,
+-};
+-
+ #ifdef CONFIG_SPI_FLASH_MACRONIX
+ static int spi_flash_set_qeb_mxic(struct spi_flash *flash)
+ {
+@@ -102,19 +92,27 @@ static int spi_flash_validate_params(struct spi_slave *spi, u8 *idcode,
+ 				     struct spi_flash *flash)
+ {
+ 	const struct spi_flash_params *params;
+-	u8 cmd;
++	u8 manufacture_id = idcode[0];
+ 	u16 jedec = idcode[1] << 8 | idcode[2];
+ 	u16 ext_jedec = idcode[3] << 8 | idcode[4];
++	u8 family_id = idcode[5];
+ 
+ 	/* Validate params from spi_flash_params table */
+ 	params = spi_flash_params_table;
+ 	for (; params->name != NULL; params++) {
+-		if ((params->jedec >> 16) == idcode[0]) {
+-			if ((params->jedec & 0xFFFF) == jedec) {
+-				if (params->ext_jedec == 0)
+-					break;
+-				else if (params->ext_jedec == ext_jedec)
++		if (JEDEC_MFR(params) == manufacture_id) {
++			if (JEDEC_ID(params) == jedec) {
++				if (params->id_len - 3 == 0) {
+ 					break;
++				} else if (params->id_len - 3 == 2) {
++					if (JEDEC_EXT(params) == ext_jedec) {
++						break;
++					}
++				} else {
++					if ((JEDEC_EXT(params) == (ext_jedec & 0xFF00)) && (JEDEC_FID(params) == family_id)) {
++						break;
++					}
++				}
+ 			}
+ 		}
+ 	}
+@@ -149,48 +147,48 @@ static int spi_flash_validate_params(struct spi_slave *spi, u8 *idcode,
+ 
+ 	/* Compute the flash size */
+ 	flash->shift = (flash->dual_flash & SF_DUAL_PARALLEL_FLASH) ? 1 : 0;
++	flash->page_size = params->page_size;
+ 	/*
+ 	 * The Spansion S25FL032P and S25FL064P have 256b pages, yet use the
+ 	 * 0x4d00 Extended JEDEC code. The rest of the Spansion flashes with
+ 	 * the 0x4d00 Extended JEDEC code have 512b pages. All of the others
+ 	 * have 256b pages.
+ 	 */
+-	if (ext_jedec == 0x4d00) {
+-		if ((jedec == 0x0215) || (jedec == 0x216))
+-			flash->page_size = 256;
+-		else
++	if ((ext_jedec & 0xFF00) == 0x4d00) {
++		if ((jedec != 0x0215) && (jedec != 0x0216) && (jedec != 0x220)) {
+ 			flash->page_size = 512;
+-	} else {
+-		flash->page_size = 256;
++		}
+ 	}
++
+ 	flash->page_size <<= flash->shift;
+ 	flash->sector_size = params->sector_size << flash->shift;
+-	flash->size = flash->sector_size * params->nr_sectors << flash->shift;
++	flash->size = flash->sector_size * params->n_sectors << flash->shift;
+ #ifdef CONFIG_SF_DUAL_FLASH
+ 	if (flash->dual_flash & SF_DUAL_STACKED_FLASH)
+ 		flash->size <<= 1;
+ #endif
+ 
++#ifdef CONFIG_SPI_FLASH_USE_4K_SECTORS
+ 	/* Compute erase sector and command */
+ 	if (params->flags & SECT_4K) {
+ 		flash->erase_cmd = CMD_ERASE_4K;
+ 		flash->erase_size = 4096 << flash->shift;
+-	} else if (params->flags & SECT_32K) {
+-		flash->erase_cmd = CMD_ERASE_32K;
+-		flash->erase_size = 32768 << flash->shift;
+-	} else {
+-		flash->erase_cmd = CMD_ERASE_64K;
++	} else
++#endif
++	{
++		flash->erase_cmd = CMD_ERASE_256K_ADDR4;
+ 		flash->erase_size = flash->sector_size;
+ 	}
+ 
+ 	/* Look for the fastest read cmd */
+-	cmd = fls(params->e_rd_cmd & flash->spi->op_mode_rx);
+-	if (cmd) {
+-		cmd = spi_read_cmds_array[cmd - 1];
+-		flash->read_cmd = cmd;
++	if (flash->spi->op_mode_rx & SPI_RX_SLOW) {
++		flash->read_cmd = CMD_READ_ARRAY_SLOW;
++	} else if ((flash->spi->op_mode_rx & SPI_RX_QUAD) && (params->flags & RD_QUAD)) {
++		flash->read_cmd = CMD_READ_QUAD_OUTPUT_FAST;
++	} else if ((flash->spi->op_mode_rx & SPI_RX_DUAL) && (params->flags & RD_DUAL)) {
++		flash->read_cmd = CMD_READ_DUAL_OUTPUT_FAST;
+ 	} else {
+-		/* Go for default supported read cmd */
+-		flash->read_cmd = CMD_READ_ARRAY_FAST;
++		flash->read_cmd = CMD_READ_ARRAY_FAST_ADDR4;
+ 	}
+ 
+ 	/* Not require to look for fastest only two write cmds yet */
+@@ -198,7 +196,7 @@ static int spi_flash_validate_params(struct spi_slave *spi, u8 *idcode,
+ 		flash->write_cmd = CMD_QUAD_PAGE_PROGRAM;
+ 	else
+ 		/* Go for default supported write cmd */
+-		flash->write_cmd = CMD_PAGE_PROGRAM;
++		flash->write_cmd = CMD_PAGE_PROGRAM_ADDR4;
+ 
+ 	/* Read dummy_byte: dummy byte is determined based on the
+ 	 * dummy cycles of a particular command.
+@@ -324,7 +322,7 @@ static int spi_enable_wp_pin(struct spi_flash *flash)
+  */
+ int spi_flash_probe_slave(struct spi_slave *spi, struct spi_flash *flash)
+ {
+-	u8 idcode[5];
++	u8 idcode[SPI_FLASH_MAX_ID_LEN];
+ 	int ret;
+ 
+ 	/* Setup spi_slave */
+@@ -385,6 +383,7 @@ int spi_flash_probe_slave(struct spi_slave *spi, struct spi_flash *flash)
+ 	puts("\n");
+ #endif
+ #ifndef CONFIG_SPI_FLASH_BAR
++#ifndef CONFIG_R8A7797
+ 	if (((flash->dual_flash == SF_SINGLE_FLASH) &&
+ 	     (flash->size > SPI_FLASH_16MB_BOUN)) ||
+ 	     ((flash->dual_flash > SF_SINGLE_FLASH) &&
+@@ -393,6 +392,7 @@ int spi_flash_probe_slave(struct spi_slave *spi, struct spi_flash *flash)
+ 		puts(" Full access #define CONFIG_SPI_FLASH_BAR\n");
+ 	}
+ #endif
++#endif
+ 	if (spi_enable_wp_pin(flash))
+ 		puts("Enable WP pin failed\n");
+ 
+diff --git a/drivers/spi/Makefile b/drivers/spi/Makefile
+index ce6f1cc..fd1dd7c 100644
+--- a/drivers/spi/Makefile
++++ b/drivers/spi/Makefile
+@@ -39,6 +39,7 @@ obj-$(CONFIG_MXC_SPI) += mxc_spi.o
+ obj-$(CONFIG_MXS_SPI) += mxs_spi.o
+ obj-$(CONFIG_OC_TINY_SPI) += oc_tiny_spi.o
+ obj-$(CONFIG_OMAP3_SPI) += omap3_spi.o
++obj-$(CONFIG_RCAR_GEN3_QSPI) += rcar_gen3_qspi.o
+ obj-$(CONFIG_SANDBOX_SPI) += sandbox_spi.o
+ obj-$(CONFIG_SH_SPI) += sh_spi.o
+ obj-$(CONFIG_SH_QSPI) += sh_qspi.o
+diff --git a/drivers/spi/rcar_gen3_qspi.c b/drivers/spi/rcar_gen3_qspi.c
+new file mode 100644
+index 0000000..5095b07
+--- /dev/null
++++ b/drivers/spi/rcar_gen3_qspi.c
+@@ -0,0 +1,485 @@
++/*
++ * R-CarH3 QSPI (Quad SPI) driver
++ *
++ */
++
++#include <common.h>
++#include <malloc.h>
++#include "rcar_gen3_qspi.h"
++#include <asm/arch/rcar_gen3.h>
++#include <asm/arch/rpc-flash.h>
++#include <asm/io.h>
++
++#include "../mtd/spi/sf_internal.h"
++
++/* if DEBUG_PRINT defined, Output debug log */
++//#define DEBUG_PRINT
++#ifdef DEBUG_PRINT
++#define debug_print(format, arg...) printf("[DBG] " format, ## arg)
++#else
++#define debug_print(format, arg...) do {} while(0)
++#endif
++
++struct rcar_gen3_qspi_regs {
++	unsigned int cmncr;
++	unsigned int ssldr;
++	unsigned int dummy0;
++	unsigned int drcr;
++	unsigned int drcmr;
++	unsigned int drear;
++	unsigned int dropr;
++	unsigned int drenr;
++	unsigned int smcr;
++	unsigned int smcmr;
++	unsigned int smadr;
++	unsigned int smopr;
++	unsigned int smenr;
++	unsigned int dummy1;
++	unsigned int smrdr0;
++	unsigned int smrdr1;
++	unsigned int smwdr0;
++	unsigned int smwdr1;
++	unsigned int cmnsr;
++	unsigned int dummy2[3];
++	unsigned int drdmcr;
++	unsigned int drdrenr;
++	unsigned int smdmcr;
++	unsigned int smdrenr;
++	unsigned int dummy3[5];
++	unsigned int phycnt;
++	unsigned int phyoffset1;
++	unsigned int phyoffset2;
++	unsigned int phyint;
++	unsigned int dummy4[7];
++	unsigned int div_reg;
++};
++
++struct sh_qspi_slave {
++	struct spi_slave		slave;
++	struct rcar_gen3_qspi_regs	*regs;
++};
++
++const SPI_COMMAND spi_cmd_tbl[] = {
++	{	CMD_READ_ID,		SPI_CMD_READ,	SPI_DATA_ENABLE,	0,	0,	"Read ID (JEDEC Manufacturer ID and JEDEC CFI)"		},
++	{	CMD_READ_SFDP,		SPI_CMD_READ,	SPI_DATA_ENABLE,	3,	8,	"Read JEDEC Serial Flash Discoverable Parameters"	},
++	{	CMD_READ_QUAD_ID,	SPI_CMD_READ,	SPI_DATA_ENABLE,	0,	0,	"Read Quad ID"						},
++	{	CMD_READ_STATUS,	SPI_CMD_READ,	SPI_DATA_ENABLE,	0,	0,	"Read Status Register-1"				},
++	{	CMD_READ_STATUS2,	SPI_CMD_READ,	SPI_DATA_ENABLE,	0,	0,	"Read Status Register-2"				},
++	{	CMD_READ_CONFIG,	SPI_CMD_READ,	SPI_DATA_ENABLE,	0,	0,	"Read Configuration Register-1"				},
++	{	CMD_READ_ANY_REG,	SPI_CMD_READ,	SPI_DATA_ENABLE,	3,	8,	"Read Any Register"					},
++	{	CMD_WRITE_STATUS,	SPI_CMD_WRITE,	SPI_DATA_ENABLE,	0,	0,	"Write Register (Status-1, Configuration-1)"		},
++	{	CMD_WRITE_DISABLE,	SPI_CMD_OTHER,	SPI_DATA_DISABLE,	0,	0,	"Write Disable"						},
++	{	CMD_WRITE_ENABLE,	SPI_CMD_OTHER,	SPI_DATA_DISABLE,	0,	0,	"Write Enable"						},
++	{	CMD_WRITE_ANY_REG,	SPI_CMD_WRITE,	SPI_DATA_ENABLE,	3,	0,	"Write Any Register"					},
++	{	CMD_CLSR,		SPI_CMD_OTHER,	SPI_DATA_DISABLE,	0,	0,	"Clear Status Register-1 - Erase/Prog. Fail Reset"	},
++	{	CMD_CLSR_ALT,		SPI_CMD_OTHER,	SPI_DATA_DISABLE,	0,	0,	"Clear Status Register-1 - Erase/Prog. Fail Reset"	},
++	{	CMD_4BYTE_ADDR_MODE,	SPI_CMD_OTHER,	SPI_DATA_DISABLE,	0,	0,	"Enter 4-byte Address Mode"				},
++	{	CMD_SET_BURST_LEN,	SPI_CMD_WRITE,	SPI_DATA_ENABLE,	0,	0,	"Set Burst Length"					},
++	{	CMD_EVALUATE_ERASE_STATUS,	SPI_CMD_OTHER,	SPI_DATA_DISABLE,	3,	0,	"Evaluate Erase Status"				},
++	{	CMD_ECC_READ,		SPI_CMD_READ,	SPI_DATA_ENABLE,	3,	8,	"ECC Read (3- or 4-byte address)"			},
++	{	CMD_ECC_READ_ADDR4,	SPI_CMD_READ,	SPI_DATA_ENABLE,	4,	8,	"ECC Read (4-byte address)"				},
++	{	CMD_DLPRD,		SPI_CMD_READ,	SPI_DATA_ENABLE,	0,	0,	"Data Learning Pattern Read"				},
++	{	CMD_PNVDLR,		SPI_CMD_WRITE,	SPI_DATA_ENABLE,	0,	0,	"Program NV Data Learning Register"			},
++	{	CMD_WVDLR,		SPI_CMD_WRITE,	SPI_DATA_ENABLE,	0,	0,	"Write Volatile Data Learning Register"			},
++	{	CMD_READ_ARRAY_SLOW,	SPI_CMD_READ,	SPI_DATA_ENABLE,	3,	0,	"Read (3- or 4-byte address)"				},
++	{	CMD_READ_ARRAY_SLOW_ADDR4,	SPI_CMD_READ,	SPI_DATA_ENABLE,	4,	0,	"Read (4-byte address)"				},
++	{	CMD_READ_ARRAY_FAST,	SPI_CMD_READ,	SPI_DATA_ENABLE,	3,	8,	"Fast Read (3- or 4-byte address)"			},
++	{	CMD_READ_ARRAY_FAST_ADDR4,	SPI_CMD_READ,	SPI_DATA_ENABLE,	4,	8,	"Fast Read (4-byte address)"			},
++	{	CMD_READ_DUAL_IO_FAST,	SPI_CMD_READ,	SPI_DATA_ENABLE,	3,	8,	"Dual I/O Read (3- or 4-byte address)"			},
++	{	CMD_READ_DUAL_IO_FAST_ADDR4,	SPI_CMD_READ,	SPI_DATA_ENABLE,	4,	8,	"Dual I/O Read (4-byte address)"		},
++	{	CMD_READ_QUAD_IO_FAST,	SPI_CMD_READ,	SPI_DATA_ENABLE,	3,	8,	"Quad I/O Read (3- or 4-byte address)"			},
++	{	CMD_READ_QUAD_IO_FAST_ADDR4,	SPI_CMD_READ,	SPI_DATA_ENABLE,	4,	8,	"Quad I/O Read (4-byte address)"		},
++	{	CMD_READ_QUAD_IO_DDR,	SPI_CMD_READ,	SPI_DATA_ENABLE,	3,	8,	"DDR Quad I/O Read (3- or 4-byte address)"		},
++	{	CMD_READ_QUAD_IO_DDR_ADDR4,	SPI_CMD_READ,	SPI_DATA_ENABLE,	4,	8,	"DDR Quad I/O Read (4-byte address)"		},
++	{	CMD_PAGE_PROGRAM,	SPI_CMD_WRITE,	SPI_DATA_ENABLE,	3,	0,	"Page Program (3- or 4-byte address)"			},
++	{	CMD_PAGE_PROGRAM_ADDR4,	SPI_CMD_WRITE,	SPI_DATA_ENABLE,	4,	0,	"Page Program (4-byte address)"				},
++	{	CMD_ERASE_4K,		SPI_CMD_ERASE,	SPI_DATA_DISABLE,	3,	0,	"Parameter 4 kB-sector Erase (3- or 4-byte address)"	},
++	{	CMD_ERASE_4K_ADDR4,	SPI_CMD_ERASE,	SPI_DATA_DISABLE,	4,	0,	"Parameter 4 kB-sector Erase (4-byte address)"		},
++	{	CMD_ERASE_64K,		SPI_CMD_ERASE,	SPI_DATA_DISABLE,	3,	0,	"Erase 256 kB (3- or 4-byte address)"			},
++	{	CMD_ERASE_256K_ADDR4,	SPI_CMD_ERASE,	SPI_DATA_DISABLE,	4,	0,	"Erase 256 kB (4-byte address)"				},
++	{	CMD_BULK_ERASE,		SPI_CMD_ERASE,	SPI_DATA_DISABLE,	0,	0,	"Bulk Erase"						},
++	{	CMD_BULK_ERASE_ALT,	SPI_CMD_ERASE,	SPI_DATA_DISABLE,	0,	0,	"Bulk Erase (alternate command)"			},
++	{	CMD_EPS,		SPI_CMD_ERASE,	SPI_DATA_DISABLE,	0,	0,	"Erase / Program Suspend"				},
++	{	CMD_EPS_ALT,		SPI_CMD_ERASE,	SPI_DATA_DISABLE,	0,	0,	"Erase / Program Suspend"				},
++	{	CMD_EPS_ALT2,		SPI_CMD_ERASE,	SPI_DATA_DISABLE,	0,	0,	"Erase / Program Suspend"				},
++	{	CMD_EPR,		SPI_CMD_ERASE,	SPI_DATA_DISABLE,	0,	0,	"Erase / Program Resume"				},
++	{	CMD_EPR_ALT,		SPI_CMD_ERASE,	SPI_DATA_DISABLE,	0,	0,	"Erase / Program Resume"				},
++	{	CMD_EPR_ALT2,		SPI_CMD_ERASE,	SPI_DATA_DISABLE,	0,	0,	"Erase / Program Resume"				},
++	{	CMD_OTP_PROGRAM,	SPI_CMD_WRITE,	SPI_DATA_ENABLE,	3,	0,	"OTP Program"						},
++	{	CMD_OTP_READ,		SPI_CMD_WRITE,	SPI_DATA_ENABLE,	3,	0,	"OTP Read"						},
++	{	CMD_DYB_READ,		SPI_CMD_READ,	SPI_DATA_ENABLE,	3,	0,	"DYB Read"						},
++	{	CMD_DYB_READ_ADDR4,	SPI_CMD_READ,	SPI_DATA_ENABLE,	4,	0,	"DYB Read"						},
++	{	CMD_DYB_WRITE,		SPI_CMD_WRITE,	SPI_DATA_ENABLE,	3,	0,	"DYB Write"						},
++	{	CMD_DYB_WRITE_ADDR4,	SPI_CMD_WRITE,	SPI_DATA_ENABLE,	4,	0,	"DYB Write"						},
++	{	CMD_PPB_READ,		SPI_CMD_READ,	SPI_DATA_ENABLE,	3,	0,	"PPB Read"						},
++	{	CMD_PPB_READ_ADDR4,	SPI_CMD_READ,	SPI_DATA_ENABLE,	3,	0,	"PPB Read"						},
++	{	CMD_PPB_PROGRAM,	SPI_CMD_WRITE,	SPI_DATA_DISABLE,	3,	0,	"PPB Program"						},
++	{	CMD_PPB_PROGRAM_ADDR4,	SPI_CMD_WRITE,	SPI_DATA_DISABLE,	3,	0,	"PPB Program"						},
++	{	CMD_PPB_ERASE,		SPI_CMD_OTHER,	SPI_DATA_DISABLE,	0,	0,	"PPB Erase"						},
++	{	CMD_ASP_READ,		SPI_CMD_READ,	SPI_DATA_ENABLE,	0,	0,	"ASP Read"						},
++	{	CMD_ASP_PROGRAM,	SPI_CMD_WRITE,	SPI_DATA_ENABLE,	0,	0,	"ASP Program"						},
++	{	CMD_PPB_LOCKBIT_READ,	SPI_CMD_READ,	SPI_DATA_ENABLE,	0,	0,	"PPB Lock Bit Read"					},
++	{	CMD_PPB_LOCKBIT_WRITE,	SPI_CMD_WRITE,	SPI_DATA_DISABLE,	0,	0,	"PPB Lock Bit Write"					},
++	{	CMD_PASSWD_READ,	SPI_CMD_READ,	SPI_DATA_ENABLE,	0,	0,	"Password Read"						},
++	{	CMD_PASSWD_PROGRAM,	SPI_CMD_WRITE,	SPI_DATA_ENABLE,	0,	0,	"Password Program"					},
++	{	CMD_PASSWD_UNLOCK,	SPI_CMD_OTHER,	SPI_DATA_ENABLE,	0,	0,	"Password Unlock"					},
++	{	CMD_SOFT_RESET_ENABLE,	SPI_CMD_OTHER,	SPI_DATA_DISABLE,	0,	0,	"Software Reset Enable"					},
++	{	CMD_SOFT_RESET,		SPI_CMD_OTHER,	SPI_DATA_DISABLE,	0,	0,	"Software Reset"					},
++	{	CMD_LEGACY_SOFT_RESET,	SPI_CMD_OTHER,	SPI_DATA_DISABLE,	0,	0,	"Legacy Software Reset"					},
++	{	CMD_MODE_BIT_RESET,	SPI_CMD_OTHER,	SPI_DATA_DISABLE,	0,	0,	"Mode Bit Reset"					},
++	{	CMD_ENT_DEEP_POWER_DOWN,	SPI_CMD_OTHER,	SPI_DATA_DISABLE,	0,	0,	"Enter Deep Power-Down Mode"			},
++	{	CMD_REL_DEEP_POWER_DOWN,	SPI_CMD_OTHER,	SPI_DATA_DISABLE,	0,	0,	"Release from Deep Power-Down Mode"		},
++	{	SPI_COMMAND_LAST,	SPI_CMD_OTHER,	SPI_DATA_DISABLE,	0,	0,	"Last Command"						},
++};
++
++static inline struct sh_qspi_slave *to_sh_qspi(struct spi_slave *slave)
++{
++	return container_of(slave, struct sh_qspi_slave, slave);
++}
++
++void spi_set_addr(uint32_t addr)
++{
++	debug_print("Set Addr: %08X\n", addr);
++	out_le32(RPC_SMADR, addr);
++	return;
++}
++
++static void rcar_gen3_qspi_init(void)
++{
++	out_le32(RPC_PHYCNT, 0x80000260);
++	out_le32(RPC_CMNCR, 0x81FFF300);
++
++	return;
++}
++
++int spi_cs_is_valid(unsigned int bus, unsigned int cs)
++{
++	return 1;
++}
++
++void spi_cs_activate(struct spi_slave *slave)
++{
++	out_le32(RPC_PHYCNT, 0x80000260);
++
++	return;
++}
++
++void spi_cs_deactivate(struct spi_slave *slave)
++{
++	out_le32(RPC_SMCR, SPI_SMCR_SPIE);
++	WaitRpcTxEnd();
++	out_le32(RPC_PHYCNT, 0x00000274);
++	out_le32(RPC_DRCR, 0x01FF0301);
++
++	return;
++}
++
++void spi_init(void)
++{
++	/* nothing to do */
++}
++
++struct spi_slave *spi_setup_slave(unsigned int bus, unsigned int cs,
++		unsigned int max_hz, unsigned int mode)
++{
++	struct sh_qspi_slave *ss;
++
++	if (!spi_cs_is_valid(bus, cs))
++		return NULL;
++
++	ss = spi_alloc_slave(struct sh_qspi_slave, bus, cs);
++	if (!ss) {
++		printf("SPI_error: Fail to allocate sh_qspi_slave\n");
++		return NULL;
++	}
++
++	ss->regs = (struct rcar_gen3_qspi_regs *)SH_QSPI_BASE;
++
++	/* Init R-Car-Gen3 QSPI */
++	rcar_gen3_qspi_init();
++
++	return &ss->slave;
++}
++
++void spi_free_slave(struct spi_slave *slave)
++{
++	struct sh_qspi_slave *spi = to_sh_qspi(slave);
++
++	free(spi);
++}
++
++int spi_claim_bus(struct spi_slave *slave)
++{
++	return 0;
++}
++
++void spi_release_bus(struct spi_slave *slave)
++{
++}
++
++#define BUFFER_SIZE	(128)
++int spi_xfer(struct spi_slave *slave, unsigned int bitlen, const void *dout,
++	     void *din, unsigned long flags)
++{
++	unsigned long nbyte, rnbyte, wnbyte;
++	int i, ret = 0;
++	uint32_t *tdata_l = (uint32_t *)dout;
++	uint32_t *rdata_l = (uint32_t *)din;
++	uint8_t *ptr_b;
++	uint32_t readVal, writeVal;
++
++	if (dout == NULL && din == NULL) {
++		if (flags & SPI_XFER_END)
++			spi_cs_deactivate(slave);
++		return 0;
++	}
++
++	if (bitlen % 8) {
++		printf("%s: bitlen is not 8bit alined %d", __func__, bitlen);
++		return 1;
++	}
++
++	if (flags & SPI_XFER_BEGIN) {
++		spi_cs_activate(slave);
++	}
++
++	/* Set Data Enable 32bit */
++	readVal = in_le32(RPC_SMENR);
++	writeVal = (readVal & 0xffff0000);
++	writeVal |= SPI_SMENR_SPIDE_32BIT;
++	out_le32(RPC_SMENR, writeVal);
++
++	nbyte = bitlen / 8;
++	if (tdata_l != NULL)
++		wnbyte = nbyte;
++	else
++		wnbyte = 0;
++
++	if (rdata_l != NULL)
++		rnbyte = nbyte;
++	else
++		rnbyte = 0;
++
++	while (wnbyte > 0) {
++		if (wnbyte < BYTE_32BIT) {
++			out_8(RPC_SMWDR0, *(uint8_t*)tdata_l);
++			/* Set Data Enable 8bit */
++			readVal = in_le32(RPC_SMENR);
++			writeVal = (readVal & 0xffff0000);
++			writeVal |= SPI_SMENR_SPIDE_8BIT;
++			out_le32(RPC_SMENR, writeVal);
++		}else{
++			out_le32(RPC_SMWDR0, *tdata_l);
++		}
++
++		if (wnbyte >= BYTE_32BIT) {
++			tdata_l++;
++			wnbyte -= BYTE_32BIT;
++		}else{
++			ptr_b = (uint8_t*) tdata_l;
++			ptr_b++;
++			tdata_l = (uint32_t*) ptr_b;
++			wnbyte -= BYTE_8BIT;
++		}
++
++		if (wnbyte > 0) {
++			out_le32(RPC_SMCR, SPI_SMCR_SSLKP | SPI_SMCR_SPIWE | SPI_SMCR_SPIE);
++		}else{
++			out_le32(RPC_SMCR, SPI_SMCR_SPIWE | SPI_SMCR_SPIE);
++		}
++
++		WaitRpcTxEnd();
++
++		if (wnbyte == 0) {
++			WaitReadyDevice(slave);
++		}
++	}
++
++	while (rnbyte > 0) {
++		if (rnbyte < BYTE_32BIT) {
++			readVal = in_le32(RPC_SMRDR0);
++			ptr_b = (uint8_t*) rdata_l;
++			for(i=0; i<rnbyte; i++) {
++				*ptr_b = (readVal >> (8*i)) & 0x000000ff;
++				ptr_b++;
++			}
++		}else{
++			*rdata_l = in_le32(RPC_SMRDR0);
++		}
++
++		rdata_l++;
++
++		if(slave->spi_cmd->cmd_code == CMD_READ_ARRAY_FAST_ADDR4) {
++			readVal = in_le32(RPC_SMENR);
++			writeVal = readVal | 0x0000CF00;
++			out_le32(RPC_SMENR, writeVal);
++			readVal = in_le32(RPC_SMADR);
++			readVal += BYTE_32BIT;
++			spi_set_addr(readVal);
++			out_le32(RPC_SMCR, SPI_SMCR_SPIRE | SPI_SMCR_SPIE);
++		}else{
++			if (rnbyte > BYTE_32BIT) {
++				out_le32(RPC_SMCR, SPI_SMCR_SSLKP | SPI_SMCR_SPIRE | SPI_SMCR_SPIE);
++			}else{
++				out_le32(RPC_SMCR, SPI_SMCR_SPIRE | SPI_SMCR_SPIE);
++			}
++		}
++
++		WaitRpcTxEnd();
++
++		if (rnbyte >= BYTE_32BIT) {
++			rnbyte -= BYTE_32BIT;
++		}else{
++			rnbyte = 0;
++		}
++	}
++
++	if (flags & SPI_XFER_END){
++		spi_cs_deactivate(slave);
++	}
++
++	return ret;
++}
++
++int spi_xfer_cmd(struct spi_slave *slave, int cmd_no)
++{
++	uint32_t readVal, writeVal, dummy_cyc;
++	const SPI_COMMAND		*cur_cmd_tbl;
++	cur_cmd_tbl = spi_cmd_tbl;
++
++	while(cur_cmd_tbl->cmd_code != SPI_COMMAND_LAST) {
++		if(cur_cmd_tbl->cmd_code != cmd_no) {
++			cur_cmd_tbl++;
++			continue;
++		}
++
++		slave->spi_cmd = cur_cmd_tbl;
++
++		spi_cs_activate(slave);
++		out_le32(RPC_SMCMR, cmd_no << SPI_SMCMR_CMD_BIT);
++		debug_print("SPI CODE:0x%02X [ %s ]\n", cur_cmd_tbl->cmd_code, cur_cmd_tbl->cmd_desc);
++
++		readVal = in_le32(RPC_SMENR);
++		writeVal = readVal & 0xFFFF0000;
++		writeVal |= SPI_SMENR_CDE;
++
++		/* Setting Address */
++		switch (cur_cmd_tbl->addr_len) {
++		case 3:
++			writeVal |= SPI_SMENR_ADE_3BYTE;
++			break;
++		case 4:
++			writeVal |= SPI_SMENR_ADE_4BYTE;
++			break;
++		default:
++			writeVal |= SPI_SMENR_ADE_DISABLE;
++			break;
++		}
++
++		/* Setting dummy cycle */
++		if (cur_cmd_tbl->dummy_len != 0) {
++			writeVal |= SPI_SMENR_DME;
++			dummy_cyc = cur_cmd_tbl->dummy_len - 1;
++			out_le32(RPC_SMDMCR, dummy_cyc);
++		}
++		out_le32(RPC_SMENR, writeVal);
++
++		switch(cur_cmd_tbl->rw_type) {
++		case SPI_CMD_READ:
++			readVal = in_le32(RPC_SMENR);
++			writeVal = readVal & 0xFFFFFFF0;
++			writeVal |= SPI_SMENR_SPIDE_32BIT;
++			out_le32(RPC_SMENR, writeVal);
++
++			if(cur_cmd_tbl->data_enable == SPI_DATA_ENABLE) {
++				if(cur_cmd_tbl->cmd_code == CMD_READ_ARRAY_FAST_ADDR4) {
++					out_le32(RPC_SMCR, SPI_SMCR_SPIRE | SPI_SMCR_SPIE);
++				}else{
++					out_le32(RPC_SMCR, SPI_SMCR_SSLKP | SPI_SMCR_SPIRE | SPI_SMCR_SPIE);
++				}
++			}else{
++				out_le32(RPC_SMCR, SPI_SMCR_SPIRE | SPI_SMCR_SPIE);
++			}
++			break;
++		case SPI_CMD_WRITE:
++			if(cur_cmd_tbl->data_enable == SPI_DATA_ENABLE) {
++				out_le32(RPC_SMCR, SPI_SMCR_SSLKP | SPI_SMCR_SPIWE | SPI_SMCR_SPIE);
++			}else{
++				out_le32(RPC_SMCR, SPI_SMCR_SPIWE | SPI_SMCR_SPIE);
++			}
++			break;
++		default:
++			if(cur_cmd_tbl->data_enable == SPI_DATA_ENABLE) {
++				out_le32(RPC_SMCR, SPI_SMCR_SSLKP | SPI_SMCR_SPIE);
++			}else{
++				out_le32(RPC_SMCR, SPI_SMCR_SPIE);
++			}
++			break;
++		}
++
++		WaitRpcTxEnd();
++
++		if (cur_cmd_tbl->data_enable != SPI_DATA_ENABLE) {
++			spi_cs_deactivate(slave);
++		}
++		break;
++	}
++
++	if(cur_cmd_tbl->cmd_code == SPI_COMMAND_LAST) {
++		printf("Unknown SPI Command : %02x\n", cmd_no);
++		return -1;
++	}
++	return 0;
++}
++
++void WaitRpcTxEnd(void)
++{
++	uint32_t dataL=0;
++
++	while(1) {
++		dataL = in_le32(RPC_CMNSR);
++		if(dataL & 0x00000001) {
++			break;
++		}
++		// Wait for TEND = 1
++		if(ctrlc()) {
++			puts("abort\n");
++			return;
++		}
++		udelay(1);
++	}
++	return;
++}
++
++void WaitReadyDevice(struct spi_slave *slave)
++{
++	int ret;
++	u8 status;
++	while(1) {
++		ret = spi_get_read_status(slave, &status);
++		if (ret < 0) {
++			printf("SF: fail to get read status\n");
++			return;
++		}
++		if ((status & SR1V_WIP) == 0) {
++			break;
++		}
++		udelay(1);
++	}
++	return;
++}
++
++int spi_get_read_status(struct spi_slave *slave, u8 *rs)
++{
++	int ret;
++	u8 cmd;
++
++	cmd = CMD_READ_STATUS;
++	ret = spi_flash_cmd_read(slave, &cmd, 1, rs, 1);
++	if (ret < 0) {
++		debug("SF: fail to get read status register\n");
++		return ret;
++	}
++
++	return 0;
++}
+diff --git a/drivers/spi/rcar_gen3_qspi.h b/drivers/spi/rcar_gen3_qspi.h
+new file mode 100644
+index 0000000..deb18d3
+--- /dev/null
++++ b/drivers/spi/rcar_gen3_qspi.h
+@@ -0,0 +1,301 @@
++/*
++ * Common R-Car-Gen3 QSPI Interface: Controller-specific definitions
++ *
++ */
++
++#ifndef _R_CAR_GEN3_QSPI_H_
++#define _R_CAR_GEN3_QSPI_H_
++
++/* SPI transfer flags */
++#define SPI_XFER_BEGIN		0x01	/* Assert CS before transfer */
++#define SPI_XFER_END		0x02	/* Deassert CS after transfer */
++#define SPI_XFER_MMAP		0x08	/* Memory Mapped start */
++#define SPI_XFER_MMAP_END	0x10	/* Memory Mapped End */
++#define SPI_XFER_ONCE		(SPI_XFER_BEGIN | SPI_XFER_END)
++#define SPI_XFER_U_PAGE		(1 << 5)
++
++#define SPI_COMMAND_LAST	0xffffffff
++#define SPI_SMCMR_CMD_BIT	16
++
++#define SPI_CMD_OTHER		0
++#define SPI_CMD_READ		1
++#define SPI_CMD_WRITE		2
++#define SPI_CMD_ERASE		3
++
++#define SPI_DATA_DISABLE	0
++#define SPI_DATA_ENABLE		1
++
++#define SPI_SMCR_SPIE		0x00000001
++#define SPI_SMCR_SPIWE		0x00000002
++#define SPI_SMCR_SPIRE		0x00000004
++#define SPI_SMCR_SSLKP		0x00000100
++
++#define SPI_SMENR_DME			(1 << 15)
++#define SPI_SMENR_CDE			(1 << 14)
++#define SPI_SMENR_ADE_DISABLE		(0x0 << 8)
++#define SPI_SMENR_ADE_3BYTE		(0x7 << 8)
++#define SPI_SMENR_ADE_4BYTE		(0xF << 8)
++#define SPI_SMENR_SPIDE_DISABLE		(0x0)
++#define SPI_SMENR_SPIDE_8BIT		(0x8)
++#define SPI_SMENR_SPIDE_16BIT		(0xC)
++#define SPI_SMENR_SPIDE_32BIT		(0xF)
++
++#define BYTE_32BIT		(4)
++#define BYTE_8BIT		(1)
++
++typedef struct {
++	uint32_t	cmd_code;
++	uint8_t		rw_type;
++	uint32_t	data_enable;
++	uint32_t	addr_len;
++	uint32_t	dummy_len;
++	char*		cmd_desc;
++} SPI_COMMAND;
++
++/**
++ * struct spi_slave - Representation of a SPI slave
++ *
++ * For driver model this is the per-child data used by the SPI bus. It can
++ * be accessed using dev_get_parentdata() on the slave device. The SPI uclass
++ * sets uip per_child_auto_alloc_size to sizeof(struct spi_slave), and the
++ * driver should not override it. Two platform data fields (max_hz and mode)
++ * are copied into this structure to provide an initial value. This allows
++ * them to be changed, since we should never change platform data in drivers.
++ *
++ * If not using driver model, drivers are expected to extend this with
++ * controller-specific data.
++ *
++ * @dev:		SPI slave device
++ * @max_hz:		Maximum speed for this slave
++ * @mode:		SPI mode to use for this slave (see SPI mode flags)
++ * @bus:		ID of the bus that the slave is attached to. For
++ *			driver model this is the sequence number of the SPI
++ *			bus (bus->seq) so does not need to be stored
++ * @cs:			ID of the chip select connected to the slave.
++ * @op_mode_rx:		SPI RX operation mode.
++ * @op_mode_tx:		SPI TX operation mode.
++ * @wordlen:		Size of SPI word in number of bits
++ * @max_write_size:	If non-zero, the maximum number of bytes which can
++ *			be written at once, excluding command bytes.
++ * @memory_map:		Address of read-only SPI flash access.
++ * @option:		Varies SPI bus options - separate, shared bus.
++ * @flags:		Indication of SPI flags.
++ */
++struct spi_slave {
++#ifdef CONFIG_DM_SPI
++	struct udevice *dev;	/* struct spi_slave is dev->parentdata */
++	uint max_hz;
++	uint mode;
++#else
++	unsigned int bus;
++	unsigned int cs;
++#endif
++	u8 op_mode_rx;
++	u8 op_mode_tx;
++	unsigned int wordlen;
++	unsigned int max_write_size;
++	void *memory_map;
++	u8 option;
++	u8 flags;
++	const SPI_COMMAND *spi_cmd;
++};
++
++/**
++ * Initialization, must be called once on start up.
++ *
++ * TODO: I don't think we really need this.
++ */
++void spi_init(void);
++
++/**
++ * spi_do_alloc_slave - Allocate a new SPI slave (internal)
++ *
++ * Allocate and zero all fields in the spi slave, and set the bus/chip
++ * select. Use the helper macro spi_alloc_slave() to call this.
++ *
++ * @offset:	Offset of struct spi_slave within slave structure.
++ * @size:	Size of slave structure.
++ * @bus:	Bus ID of the slave chip.
++ * @cs:		Chip select ID of the slave chip on the specified bus.
++ */
++void *spi_do_alloc_slave(int offset, int size, unsigned int bus,
++			 unsigned int cs);
++
++/**
++ * spi_alloc_slave - Allocate a new SPI slave
++ *
++ * Allocate and zero all fields in the spi slave, and set the bus/chip
++ * select.
++ *
++ * @_struct:	Name of structure to allocate (e.g. struct tegra_spi).
++ *		This structure must contain a member 'struct spi_slave *slave'.
++ * @bus:	Bus ID of the slave chip.
++ * @cs:		Chip select ID of the slave chip on the specified bus.
++ */
++#define spi_alloc_slave(_struct, bus, cs) \
++	spi_do_alloc_slave(offsetof(_struct, slave), \
++			    sizeof(_struct), bus, cs)
++
++/**
++ * spi_alloc_slave_base - Allocate a new SPI slave with no private data
++ *
++ * Allocate and zero all fields in the spi slave, and set the bus/chip
++ * select.
++ *
++ * @bus:	Bus ID of the slave chip.
++ * @cs:		Chip select ID of the slave chip on the specified bus.
++ */
++#define spi_alloc_slave_base(bus, cs) \
++	spi_do_alloc_slave(0, sizeof(struct spi_slave), bus, cs)
++
++/**
++ * Set up communications parameters for a SPI slave.
++ *
++ * This must be called once for each slave. Note that this function
++ * usually doesn't touch any actual hardware, it only initializes the
++ * contents of spi_slave so that the hardware can be easily
++ * initialized later.
++ *
++ * @bus:	Bus ID of the slave chip.
++ * @cs:		Chip select ID of the slave chip on the specified bus.
++ * @max_hz:	Maximum SCK rate in Hz.
++ * @mode:	Clock polarity, clock phase and other parameters.
++ *
++ * Returns: A spi_slave reference that can be used in subsequent SPI
++ * calls, or NULL if one or more of the parameters are not supported.
++ */
++struct spi_slave *spi_setup_slave(unsigned int bus, unsigned int cs,
++		unsigned int max_hz, unsigned int mode);
++
++/**
++ * Free any memory associated with a SPI slave.
++ *
++ * @slave:	The SPI slave
++ */
++void spi_free_slave(struct spi_slave *slave);
++
++/**
++ * Claim the bus and prepare it for communication with a given slave.
++ *
++ * This must be called before doing any transfers with a SPI slave. It
++ * will enable and initialize any SPI hardware as necessary, and make
++ * sure that the SCK line is in the correct idle state. It is not
++ * allowed to claim the same bus for several slaves without releasing
++ * the bus in between.
++ *
++ * @slave:	The SPI slave
++ *
++ * Returns: 0 if the bus was claimed successfully, or a negative value
++ * if it wasn't.
++ */
++int spi_claim_bus(struct spi_slave *slave);
++
++/**
++ * Release the SPI bus
++ *
++ * This must be called once for every call to spi_claim_bus() after
++ * all transfers have finished. It may disable any SPI hardware as
++ * appropriate.
++ *
++ * @slave:	The SPI slave
++ */
++void spi_release_bus(struct spi_slave *slave);
++
++/**
++ * Set the word length for SPI transactions
++ *
++ * Set the word length (number of bits per word) for SPI transactions.
++ *
++ * @slave:	The SPI slave
++ * @wordlen:	The number of bits in a word
++ *
++ * Returns: 0 on success, -1 on failure.
++ */
++int spi_set_wordlen(struct spi_slave *slave, unsigned int wordlen);
++
++/**
++ * SPI transfer
++ *
++ * This writes "bitlen" bits out the SPI MOSI port and simultaneously clocks
++ * "bitlen" bits in the SPI MISO port.  That's just the way SPI works.
++ *
++ * The source of the outgoing bits is the "dout" parameter and the
++ * destination of the input bits is the "din" parameter.  Note that "dout"
++ * and "din" can point to the same memory location, in which case the
++ * input data overwrites the output data (since both are buffered by
++ * temporary variables, this is OK).
++ *
++ * spi_xfer() interface:
++ * @slave:	The SPI slave which will be sending/receiving the data.
++ * @bitlen:	How many bits to write and read.
++ * @dout:	Pointer to a string of bits to send out.  The bits are
++ *		held in a byte array and are sent MSB first.
++ * @din:	Pointer to a string of bits that will be filled in.
++ * @flags:	A bitwise combination of SPI_XFER_* flags.
++ *
++ * Returns: 0 on success, not 0 on failure
++ */
++int  spi_xfer(struct spi_slave *slave, unsigned int bitlen, const void *dout,
++		void *din, unsigned long flags);
++
++/**
++ * Determine if a SPI chipselect is valid.
++ * This function is provided by the board if the low-level SPI driver
++ * needs it to determine if a given chipselect is actually valid.
++ *
++ * Returns: 1 if bus:cs identifies a valid chip on this board, 0
++ * otherwise.
++ */
++int spi_cs_is_valid(unsigned int bus, unsigned int cs);
++
++#ifndef CONFIG_DM_SPI
++/**
++ * Activate a SPI chipselect.
++ * This function is provided by the board code when using a driver
++ * that can't control its chipselects automatically (e.g.
++ * common/soft_spi.c). When called, it should activate the chip select
++ * to the device identified by "slave".
++ */
++void spi_cs_activate(struct spi_slave *slave);
++
++/**
++ * Deactivate a SPI chipselect.
++ * This function is provided by the board code when using a driver
++ * that can't control its chipselects automatically (e.g.
++ * common/soft_spi.c). When called, it should deactivate the chip
++ * select to the device identified by "slave".
++ */
++void spi_cs_deactivate(struct spi_slave *slave);
++
++/**
++ * Set transfer speed.
++ * This sets a new speed to be applied for next spi_xfer().
++ * @slave:	The SPI slave
++ * @hz:		The transfer speed
++ */
++void spi_set_speed(struct spi_slave *slave, uint hz);
++#endif
++
++
++/**
++ * Set up a SPI slave for a particular device tree node
++ *
++ * This calls spi_setup_slave() with the correct bus number. Call
++ * spi_free_slave() to free it later.
++ *
++ * @param blob:		Device tree blob
++ * @param slave_node:	Slave node to use
++ * @param spi_node:	SPI peripheral node to use
++ * @return pointer to new spi_slave structure
++ */
++struct spi_slave *spi_setup_slave_fdt(const void *blob, int slave_node,
++				      int spi_node);
++
++/* QSPI Flash Read/Write function */
++void spi_set_addr(uint32_t addr);
++int spi_xfer_cmd(struct spi_slave *slave, int cmd_no);
++void WaitRpcTxEnd(void);
++void WaitReadyDevice(struct spi_slave *slave);
++int spi_get_read_status(struct spi_slave *slave, u8 *rs);
++
++#endif	/* _R_CAR_GEN3_QSPI_H_ */
+diff --git a/include/linux/bitops.h b/include/linux/bitops.h
+index e724310..3bf04d2 100644
+--- a/include/linux/bitops.h
++++ b/include/linux/bitops.h
+@@ -104,6 +104,7 @@ static inline unsigned int generic_hweight8(unsigned int w)
+ 	return (res & 0x0F) + ((res >> 4) & 0x0F);
+ }
+ 
++#define BIT(nr)		(1UL << (nr))
+ #define BIT_MASK(nr)		(1UL << ((nr) % BITS_PER_LONG))
+ #define BIT_WORD(nr)		((nr) / BITS_PER_LONG)
+ 
+diff --git a/include/spi.h b/include/spi.h
+index c58e453..d6978c7 100644
+--- a/include/spi.h
++++ b/include/spi.h
+@@ -11,18 +11,24 @@
+ #define _SPI_H_
+ 
+ /* SPI mode flags */
+-#define	SPI_CPHA	0x01			/* clock phase */
+-#define	SPI_CPOL	0x02			/* clock polarity */
++#define	SPI_CPHA	BIT(0)			/* clock phase */
++#define	SPI_CPOL	BIT(1)			/* clock polarity */
+ #define	SPI_MODE_0	(0|0)			/* (original MicroWire) */
+ #define	SPI_MODE_1	(0|SPI_CPHA)
+ #define	SPI_MODE_2	(SPI_CPOL|0)
+ #define	SPI_MODE_3	(SPI_CPOL|SPI_CPHA)
+-#define	SPI_CS_HIGH	0x04			/* CS active high */
+-#define	SPI_LSB_FIRST	0x08			/* per-word bits-on-wire */
+-#define	SPI_3WIRE	0x10			/* SI/SO signals shared */
+-#define	SPI_LOOP	0x20			/* loopback mode */
+-#define	SPI_SLAVE	0x40			/* slave mode */
+-#define	SPI_PREAMBLE	0x80			/* Skip preamble bytes */
++#define	SPI_CS_HIGH	BIT(2)			/* CS active high */
++#define	SPI_LSB_FIRST	BIT(3)			/* per-word bits-on-wire */
++#define	SPI_3WIRE	BIT(4)			/* SI/SO signals shared */
++#define	SPI_LOOP	BIT(5)			/* loopback mode */
++#define	SPI_SLAVE	BIT(6)			/* slave mode */
++#define	SPI_PREAMBLE	BIT(7)			/* Skip preamble bytes */
++#define	SPI_TX_BYTE	BIT(8)			/* transmit with 1 wire byte */
++#define	SPI_TX_DUAL	BIT(9)			/* transmit with 2 wires */
++#define	SPI_TX_QUAD	BIT(10)			/* transmit with 4 wires */
++#define	SPI_RX_SLOW	BIT(11)			/* receive with 1 wire slow */
++#define	SPI_RX_DUAL	BIT(12)			/* receive with 2 wires */
++#define	SPI_RX_QUAD	BIT(13)			/* receive with 4 wires */
+ 
+ /* SPI transfer flags */
+ #define SPI_XFER_BEGIN		0x01	/* Assert CS before transfer */
+-- 
+1.9.1

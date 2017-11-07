@@ -1,0 +1,204 @@
+From af7857397da1ee7cfc83acd27906cca7703fdc6f Mon Sep 17 00:00:00 2001
+From: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+Date: Thu, 23 Feb 2017 13:43:41 +0300
+Subject: [PATCH 11/17] vringh: add data push/pull with external copy helper
+
+Add support for case when data from/to buffers pointed by vring
+descriptios can't be just memcpy()'ed. E.g. that data has to be
+copied over physical PCIe bus.
+
+New vringh_iov_{push,pull}_{user,kern}_ext() routines take a pointer to
+copy helper that does actual copy of single data chunk.
+
+Signed-off-by: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+---
+ drivers/vhost/vringh.c | 64 +++++++++++++++++++++++++++++++++++++++++++-------
+ include/linux/vringh.h | 24 +++++++++++++++++++
+ 2 files changed, 79 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/vhost/vringh.c b/drivers/vhost/vringh.c
+index e488719..f106eb4 100644
+--- a/drivers/vhost/vringh.c
++++ b/drivers/vhost/vringh.c
+@@ -73,7 +73,8 @@ static inline int __vringh_get_head(const struct vringh *vrh,
+ static inline ssize_t vringh_iov_xfer(struct vringh_kiov *iov,
+ 				      void *ptr, size_t len,
+ 				      int (*xfer)(void *addr, void *ptr,
+-						  size_t len))
++					          size_t len, void *context),
++				      void *context)
+ {
+ 	int err, done = 0;
+ 
+@@ -81,7 +82,7 @@ static inline ssize_t vringh_iov_xfer(struct vringh_kiov *iov,
+ 		size_t partlen;
+ 
+ 		partlen = min(iov->iov[iov->i].iov_len, len);
+-		err = xfer(iov->iov[iov->i].iov_base, ptr, partlen);
++		err = xfer(iov->iov[iov->i].iov_base, ptr, partlen, context);
+ 		if (err)
+ 			return err;
+ 		done += partlen;
+@@ -577,13 +578,15 @@ static inline int putused_user(struct vring_used_elem *dst,
+ 			    sizeof(*dst) * num) ? -EFAULT : 0;
+ }
+ 
+-static inline int xfer_from_user(void *src, void *dst, size_t len)
++static inline int xfer_from_user(void *src, void *dst, size_t len,
++				 void *context)
+ {
+ 	return copy_from_user(dst, (__force void __user *)src, len) ?
+ 		-EFAULT : 0;
+ }
+ 
+-static inline int xfer_to_user(void *dst, void *src, size_t len)
++static inline int xfer_to_user(void *dst, void *src, size_t len,
++			       void *context)
+ {
+ 	return copy_to_user((__force void __user *)dst, src, len) ?
+ 		-EFAULT : 0;
+@@ -706,10 +709,21 @@ EXPORT_SYMBOL(vringh_getdesc_user);
+ ssize_t vringh_iov_pull_user(struct vringh_iov *riov, void *dst, size_t len)
+ {
+ 	return vringh_iov_xfer((struct vringh_kiov *)riov,
+-			       dst, len, xfer_from_user);
++			       dst, len, xfer_from_user, NULL);
+ }
+ EXPORT_SYMBOL(vringh_iov_pull_user);
+ 
++ssize_t vringh_iov_pull_user_ext(struct vringh_iov *riov,
++				 void *dst, size_t len,
++				 int (*xfer)(void *in_iov, void *data,
++						 size_t len, void *context),
++				 void *context)
++{
++	return vringh_iov_xfer((struct vringh_kiov *)riov,
++			       dst, len, xfer, context);
++}
++EXPORT_SYMBOL(vringh_iov_pull_user_ext);
++
+ /**
+  * vringh_iov_push_user - copy bytes into vring_iov.
+  * @wiov: the wiov as passed to vringh_getdesc_user() (updated as we consume)
+@@ -722,10 +736,21 @@ ssize_t vringh_iov_push_user(struct vringh_iov *wiov,
+ 			     const void *src, size_t len)
+ {
+ 	return vringh_iov_xfer((struct vringh_kiov *)wiov,
+-			       (void *)src, len, xfer_to_user);
++			       (void *)src, len, xfer_to_user, NULL);
+ }
+ EXPORT_SYMBOL(vringh_iov_push_user);
+ 
++ssize_t vringh_iov_push_user_ext(struct vringh_iov *wiov,
++				 void *src, size_t len,
++				 int (*xfer)(void *in_iov, void *data,
++						 size_t len, void *context),
++				 void *context)
++{
++	return vringh_iov_xfer((struct vringh_kiov *)wiov,
++			       (void *)src, len, xfer, context);
++}
++EXPORT_SYMBOL(vringh_iov_push_user_ext);
++
+ /**
+  * vringh_abandon_user - we've decided not to handle the descriptor(s).
+  * @vrh: the vring.
+@@ -873,7 +898,8 @@ static inline int putused_kern_io(struct vring_used_elem *dst,
+ 	return 0;
+ }
+ 
+-static inline int xfer_kern(void *src, void *dst, size_t len)
++static inline int xfer_kern(void *src, void *dst, size_t len,
++			    void *context)
+ {
+ 	memcpy(dst, src, len);
+ 	return 0;
+@@ -1000,10 +1026,20 @@ EXPORT_SYMBOL(vringh_getdesc_kern_io);
+  */
+ ssize_t vringh_iov_pull_kern(struct vringh_kiov *riov, void *dst, size_t len)
+ {
+-	return vringh_iov_xfer(riov, dst, len, xfer_kern);
++	return vringh_iov_xfer(riov, dst, len, xfer_kern, NULL);
+ }
+ EXPORT_SYMBOL(vringh_iov_pull_kern);
+ 
++ssize_t vringh_iov_pull_kern_ext(struct vringh_kiov *riov,
++				 void *dst, size_t len,
++				 int (*xfer)(void *in_iov, void *data,
++						 size_t len, void *context),
++				 void *context)
++{
++	return vringh_iov_xfer(riov, dst, len, xfer, context);
++}
++EXPORT_SYMBOL(vringh_iov_pull_kern_ext);
++
+ /**
+  * vringh_iov_push_kern - copy bytes into vring_iov.
+  * @wiov: the wiov as passed to vringh_getdesc_kern() (updated as we consume)
+@@ -1015,10 +1051,20 @@ EXPORT_SYMBOL(vringh_iov_pull_kern);
+ ssize_t vringh_iov_push_kern(struct vringh_kiov *wiov,
+ 			     const void *src, size_t len)
+ {
+-	return vringh_iov_xfer(wiov, (void *)src, len, xfer_kern);
++	return vringh_iov_xfer(wiov, (void *)src, len, xfer_kern, NULL);
+ }
+ EXPORT_SYMBOL(vringh_iov_push_kern);
+ 
++ssize_t vringh_iov_push_kern_ext(struct vringh_kiov *wiov,
++				 const void *src, size_t len,
++				 int (*xfer)(void *in_iov, void *data,
++						 size_t len, void *context),
++				 void *context)
++{
++	return vringh_iov_xfer(wiov, (void *)src, len, xfer, context);
++}
++EXPORT_SYMBOL(vringh_iov_push_kern_ext);
++
+ /**
+  * vringh_abandon_kern - we've decided not to handle the descriptor(s).
+  * @vrh: the vring.
+diff --git a/include/linux/vringh.h b/include/linux/vringh.h
+index ed279e4..30055743 100644
+--- a/include/linux/vringh.h
++++ b/include/linux/vringh.h
+@@ -155,6 +155,18 @@ ssize_t vringh_iov_pull_user(struct vringh_iov *riov, void *dst, size_t len);
+ ssize_t vringh_iov_push_user(struct vringh_iov *wiov,
+ 			     const void *src, size_t len);
+ 
++/* Copy routines that use external copy helper */
++ssize_t vringh_iov_pull_user_ext(struct vringh_iov *riov,
++				 void *dst, size_t len,
++				 int (*xfer)(void *in_iov, void *data,
++						 size_t len, void *context),
++				 void *context);
++ssize_t vringh_iov_push_user_ext(struct vringh_iov *wiov,
++				 void *src, size_t len,
++				 int (*xfer)(void *in_iov, void *data,
++						 size_t len, void *context),
++				 void *context);
++
+ /* Mark a descriptor as used. */
+ int vringh_complete_user(struct vringh *vrh, u16 head, u32 len);
+ int vringh_complete_multi_user(struct vringh *vrh,
+@@ -217,6 +229,18 @@ int vringh_getdesc_kern_io(struct vringh *vrh,
+ ssize_t vringh_iov_pull_kern(struct vringh_kiov *riov, void *dst, size_t len);
+ ssize_t vringh_iov_push_kern(struct vringh_kiov *wiov,
+ 			     const void *src, size_t len);
++
++ssize_t vringh_iov_pull_kern_ext(struct vringh_kiov *riov,
++				 void *dst, size_t len,
++				 int (*xfer)(void *in_iov, void *data,
++						 size_t len, void *context),
++				 void *context);
++ssize_t vringh_iov_push_kern_ext(struct vringh_kiov *wiov,
++				 const void *src, size_t len,
++				 int (*xfer)(void *in_iov, void *data,
++						 size_t len, void *context),
++				 void *context);
++
+ void vringh_abandon_kern(struct vringh *vrh, unsigned int num);
+ int vringh_complete_kern(struct vringh *vrh, u16 head, u32 len);
+ int vringh_complete_kern_io(struct vringh *vrh, u16 head, u32 len);
+-- 
+1.9.1
+

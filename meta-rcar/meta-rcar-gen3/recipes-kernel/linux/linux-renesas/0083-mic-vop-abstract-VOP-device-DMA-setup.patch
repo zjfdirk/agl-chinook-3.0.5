@@ -1,0 +1,159 @@
+From e30c4677881f358b2b634e307eeb73283a172766 Mon Sep 17 00:00:00 2001
+From: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+Date: Wed, 22 Feb 2017 16:58:02 +0300
+Subject: [PATCH 03/17] mic: vop: abstract VOP device DMA setup
+
+This is preparation for use of VOP in non-MIC environment.
+
+Method used to setup DMA-related fields in struct device embedded
+into vop_device, hardcoded into vop_register_device(), is not suitable
+for other platforms.
+
+So move that into new setup_dma() method of vop_hw_ops.
+
+Signed-off-by: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+---
+ drivers/misc/mic/bus/vop_bus.c     |  5 +----
+ drivers/misc/mic/bus/vop_bus.h     |  4 +++-
+ drivers/misc/mic/card/mic_device.c |  9 ++++++++-
+ drivers/misc/mic/host/mic_boot.c   | 13 ++++++++++---
+ 4 files changed, 22 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/misc/mic/bus/vop_bus.c b/drivers/misc/mic/bus/vop_bus.c
+index 303da22..17f824c 100644
+--- a/drivers/misc/mic/bus/vop_bus.c
++++ b/drivers/misc/mic/bus/vop_bus.c
+@@ -140,7 +140,6 @@ static void vop_release_dev(struct device *d)
+ 
+ struct vop_device *
+ vop_register_device(struct device *pdev, int id,
+-		    const struct dma_map_ops *dma_ops,
+ 		    struct vop_hw_ops *hw_ops, u8 dnode, struct mic_mw *aper,
+ 		    struct dma_chan *chan)
+ {
+@@ -154,9 +153,6 @@ vop_register_device(struct device *pdev, int id,
+ 	vdev->dev.parent = pdev;
+ 	vdev->id.device = id;
+ 	vdev->id.vendor = VOP_DEV_ANY_ID;
+-	vdev->dev.archdata.dma_ops = (struct dma_map_ops *)dma_ops;
+-	vdev->dev.dma_mask = &vdev->dev.coherent_dma_mask;
+-	dma_set_mask(&vdev->dev, DMA_BIT_MASK(64));
+ 	vdev->dev.release = vop_release_dev;
+ 	vdev->hw_ops = hw_ops;
+ 	vdev->dev.bus = &vop_bus;
+@@ -165,6 +161,7 @@ vop_register_device(struct device *pdev, int id,
+ 	vdev->dma_ch = chan;
+ 	vdev->index = dnode - 1;
+ 	dev_set_name(&vdev->dev, "vop-dev%u", vdev->index);
++	hw_ops->setup_dma(vdev);
+ 	/*
+ 	 * device_register() causes the bus infrastructure to look for a
+ 	 * matching driver.
+diff --git a/drivers/misc/mic/bus/vop_bus.h b/drivers/misc/mic/bus/vop_bus.h
+index 5144e85..f74b844 100644
+--- a/drivers/misc/mic/bus/vop_bus.h
++++ b/drivers/misc/mic/bus/vop_bus.h
+@@ -78,6 +78,8 @@ struct vop_driver {
+ /**
+  * vop_hw_ops - Hardware operations for accessing a VOP device on the VOP bus.
+  *
++ * @setup_dma: Called at device creation time to do hw-specific job of setting
++ *             up VOP device as DMA master.
+  * @next_db: Obtain the next available doorbell.
+  * @request_irq: Request an interrupt on a particular doorbell.
+  * @free_irq: Free an interrupt requested previously.
+@@ -96,6 +98,7 @@ struct vop_driver {
+  *		a DMA channel on the peer node.
+  */
+ struct vop_hw_ops {
++	void (*setup_dma)(struct vop_device *vpdev);
+ 	int (*next_db)(struct vop_device *vpdev);
+ 	struct mic_irq *(*request_irq)(struct vop_device *vpdev,
+ 				       irqreturn_t (*func)(int irq, void *data),
+@@ -119,7 +122,6 @@ struct vop_hw_ops {
+ 
+ struct vop_device *
+ vop_register_device(struct device *pdev, int id,
+-		    const struct dma_map_ops *dma_ops,
+ 		    struct vop_hw_ops *hw_ops, u8 dnode, struct mic_mw *aper,
+ 		    struct dma_chan *chan);
+ void vop_unregister_device(struct vop_device *dev);
+diff --git a/drivers/misc/mic/card/mic_device.c b/drivers/misc/mic/card/mic_device.c
+index 6d412bc..8c92987 100644
+--- a/drivers/misc/mic/card/mic_device.c
++++ b/drivers/misc/mic/card/mic_device.c
+@@ -254,6 +254,12 @@ static inline struct mic_driver *vpdev_to_mdrv(struct vop_device *vpdev)
+ 	return dev_get_drvdata(vpdev->dev.parent);
+ }
+ 
++static void __mic_setup_dma(struct vop_device *vpdev)
++{
++	vpdev->dev.dma_mask = &vpdev->dev.coherent_dma_mask;
++	dma_set_mask(&vpdev->dev, DMA_BIT_MASK(64));
++}
++
+ static struct mic_irq *
+ __mic_request_irq(struct vop_device *vpdev,
+ 		  irqreturn_t (*func)(int irq, void *data),
+@@ -339,6 +345,7 @@ static void __mic_free_mappable(struct vop_device *vpdev, size_t size,
+ }
+ 
+ static struct vop_hw_ops vop_hw_ops = {
++	.setup_dma = __mic_setup_dma,
+ 	.request_irq = __mic_request_irq,
+ 	.free_irq = __mic_free_irq,
+ 	.ack_interrupt = __mic_ack_interrupt,
+@@ -410,7 +417,7 @@ int __init mic_driver_init(struct mic_driver *mdrv)
+ 		goto irq_uninit;
+ 	}
+ 	mdrv->vpdev = vop_register_device(mdrv->dev, VOP_DEV_TRNSP,
+-					  NULL, &vop_hw_ops, 0,
++					  &vop_hw_ops, 0,
+ 					  NULL, mdrv->dma_ch[0]);
+ 	if (IS_ERR(mdrv->vpdev)) {
+ 		rc = PTR_ERR(mdrv->vpdev);
+diff --git a/drivers/misc/mic/host/mic_boot.c b/drivers/misc/mic/host/mic_boot.c
+index d8ca991..4fc2343 100644
+--- a/drivers/misc/mic/host/mic_boot.c
++++ b/drivers/misc/mic/host/mic_boot.c
+@@ -55,11 +55,18 @@ static void _mic_dma_unmap_page(struct device *dev, dma_addr_t dma_addr,
+ 	mic_unmap_single(mdev, dma_addr, size);
+ }
+ 
+-static const struct dma_map_ops _mic_dma_ops = {
++static struct dma_map_ops _mic_dma_ops = {
+ 	.map_page = _mic_dma_map_page,
+ 	.unmap_page = _mic_dma_unmap_page,
+ };
+ 
++static void __mic_setup_dma(struct vop_device *vpdev)
++{
++	vpdev->dev.dma_mask = &vpdev->dev.coherent_dma_mask;
++	dma_set_mask(&vpdev->dev, DMA_BIT_MASK(64));
++	vpdev->dev.archdata.dma_ops = &_mic_dma_ops;
++}
++
+ static struct mic_irq *
+ __mic_request_irq(struct vop_device *vpdev,
+ 		  irqreturn_t (*func)(int irq, void *data),
+@@ -155,6 +162,7 @@ static void __mic_free_mappable(struct vop_device *vpdev, size_t size,
+ }
+ 
+ static struct vop_hw_ops vop_hw_ops = {
++	.setup_dma = __mic_setup_dma,
+ 	.request_irq = __mic_request_irq,
+ 	.free_irq = __mic_free_irq,
+ 	.ack_interrupt = __mic_ack_interrupt,
+@@ -524,8 +532,7 @@ static int _mic_start(struct cosm_device *cdev, int id)
+ 		goto dma_free;
+ 	}
+ 
+-	mdev->vpdev = vop_register_device(&mdev->pdev->dev,
+-					  VOP_DEV_TRNSP, &_mic_dma_ops,
++	mdev->vpdev = vop_register_device(&mdev->pdev->dev, VOP_DEV_TRNSP,
+ 					  &vop_hw_ops, id + 1, &mdev->aper,
+ 					  mdev->dma_ch[0]);
+ 	if (IS_ERR(mdev->vpdev)) {
+-- 
+1.9.1
+

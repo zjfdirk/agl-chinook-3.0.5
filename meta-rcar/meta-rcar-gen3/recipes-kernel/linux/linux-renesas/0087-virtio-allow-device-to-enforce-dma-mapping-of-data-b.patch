@@ -1,0 +1,58 @@
+From 1c2971cfce37310c410ee43c843947aa43872996 Mon Sep 17 00:00:00 2001
+From: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+Date: Thu, 23 Feb 2017 09:06:06 +0300
+Subject: [PATCH 07/17] virtio: allow device to enforce dma-mapping of data
+ buffers
+
+This adds possibility for virtio device provider to enforce dma-mapping
+of data buffers for this device.
+
+This is required if there is some real physical transport between Host
+and Guest (i.e. Host and Guest are on different sides of physical PCIe
+link). In such case, dma-mapping must be enforced for all virtio
+drivers.
+
+Signed-off-by: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+---
+ drivers/virtio/virtio_ring.c  | 3 +++
+ include/linux/virtio_config.h | 3 +++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/drivers/virtio/virtio_ring.c b/drivers/virtio/virtio_ring.c
+index 3a1a388d..8fdf59d 100644
+--- a/drivers/virtio/virtio_ring.c
++++ b/drivers/virtio/virtio_ring.c
+@@ -137,6 +137,9 @@ struct vring_virtqueue {
+ 
+ static bool vring_use_dma_api(struct virtio_device *vdev)
+ {
++	if (vdev->config->use_dma_api)
++		return vdev->config->use_dma_api(vdev);
++
+ 	/*
+ 	 * In theory, it's possible to have a buggy QEMU-supposed
+ 	 * emulated Q35 IOMMU and Xen enabled at the same time.  On
+diff --git a/include/linux/virtio_config.h b/include/linux/virtio_config.h
+index 6e6cb0c..0706eee 100644
+--- a/include/linux/virtio_config.h
++++ b/include/linux/virtio_config.h
+@@ -56,6 +56,8 @@
+  *      This returns a pointer to the bus name a la pci_name from which
+  *      the caller can then copy.
+  * @set_vq_affinity: set the affinity for a virtqueue.
++ * @use_dma_api: if buffers pointed by descriptors must be mapped using
++ *      dma_map_page() and friends
+  */
+ typedef void vq_callback_t(struct virtqueue *);
+ struct virtio_config_ops {
+@@ -76,6 +78,7 @@ struct virtio_config_ops {
+ 	int (*finalize_features)(struct virtio_device *vdev);
+ 	const char *(*bus_name)(struct virtio_device *vdev);
+ 	int (*set_vq_affinity)(struct virtqueue *vq, int cpu);
++	bool (*use_dma_api)(struct virtio_device *);
+ };
+ 
+ /* If driver didn't advertise the feature, it will never appear. */
+-- 
+1.9.1
+

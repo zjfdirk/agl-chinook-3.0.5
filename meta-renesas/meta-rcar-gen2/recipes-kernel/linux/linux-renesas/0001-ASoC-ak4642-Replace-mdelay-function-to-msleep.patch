@@ -1,0 +1,29 @@
+From 21b85faf93b8028cfa477279354bedab93dcea04 Mon Sep 17 00:00:00 2001
+From: Harunobu Kurokawa <harunobu.kurokawa.dn@renesas.com>
+Date: Wed, 21 Dec 2016 11:27:34 +0900
+Subject: [PATCH] ASoC: ak4642: Replace mdelay function to msleep
+
+Replace mdelay to msleep to avoid busy loop on ak4642_lout_event().
+Otherwise, sometimes playback doesn't work correctly when pulseaudio was used.
+
+Signed-off-by: Harunobu Kurokawa <harunobu.kurokawa.dn@renesas.com>
+---
+ sound/soc/codecs/ak4642.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sound/soc/codecs/ak4642.c b/sound/soc/codecs/ak4642.c
+index 40500cd..0205ae1 100644
+--- a/sound/soc/codecs/ak4642.c
++++ b/sound/soc/codecs/ak4642.c
+@@ -186,7 +186,7 @@ static int ak4642_lout_event(struct snd_soc_dapm_widget *w,
+ 		break;
+ 	case SND_SOC_DAPM_POST_PMU:	/* after widget power up */
+ 		/* Power save mode OFF */
+-		mdelay(popup_wait);
++		msleep(popup_wait);
+ 		snd_soc_update_bits(codec, SG_SL2, LOPS, 0);
+ 		break;
+ 	case SND_SOC_DAPM_PRE_PMD:	/* before widget power down */
+-- 
+2.9.2
+

@@ -1,0 +1,186 @@
+From 58d8ea72ec78cb17cf75c82c67a69e9bd383c3b3 Mon Sep 17 00:00:00 2001
+From: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+Date: Thu, 1 Sep 2016 20:09:03 +0300
+Subject: [PATCH 10/10] omxvideodec: support creating buffers using sink
+
+Used for zero-copy output to wayland/weston
+
+Signed-off-by: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+---
+ omx/gstomxbufferpool.c |  107 +++++++++++++++++++++++++++++++++++++++++++++---
+ omx/gstomxvideodec.c   |   11 ++++-
+ 2 files changed, 111 insertions(+), 7 deletions(-)
+
+diff --git a/omx/gstomxbufferpool.c b/omx/gstomxbufferpool.c
+index eb2fe9d..60b25ef 100644
+--- a/omx/gstomxbufferpool.c
++++ b/omx/gstomxbufferpool.c
+@@ -372,6 +372,73 @@ GstOMXBuffer *gst_omx_buffer_get_omxbuffer (GstBuffer * buffer)
+   return omx_buf;
+ }
+ 
++#ifdef HAVE_MMNGRBUF
++static GstBuffer *
++gst_omx_buffer_pool_request_videosink_buffer_creation (GstOMXBufferPool * pool,
++    gint dmabuf_fd[GST_VIDEO_MAX_PLANES], gpointer plane_buf[GST_VIDEO_MAX_PLANES], gint stride[GST_VIDEO_MAX_PLANES])
++{
++  GstQuery *query;
++  GValue val = { 0, };
++  GstStructure *structure;
++  const GValue *value;
++  GstBuffer *buffer;
++  GArray *dmabuf_array;
++  GArray *stride_array;
++  GArray *planebuf_array;
++  gint n_planes;
++  gint i;
++
++  g_value_init (&val, G_TYPE_POINTER);
++  g_value_set_pointer (&val, (gpointer) pool->allocator);
++
++  dmabuf_array = g_array_new (FALSE, FALSE, sizeof (gint));
++  stride_array = g_array_new (FALSE, FALSE, sizeof (gint));
++  planebuf_array = g_array_new (FALSE, FALSE, sizeof (gpointer));
++
++  n_planes = GST_VIDEO_INFO_N_PLANES (&pool->video_info);
++  for (i = 0; i < n_planes; i++) {
++    g_array_append_val (dmabuf_array, dmabuf_fd[i]);
++    g_array_append_val (stride_array, stride[i]);
++    g_array_append_val (planebuf_array, plane_buf[i]);
++  }
++
++  structure = gst_structure_new ("videosink_buffer_creation_request",
++      "width", G_TYPE_INT, pool->port->port_def.format.video.nFrameWidth,
++      "height", G_TYPE_INT, pool->port->port_def.format.video.nFrameHeight,
++      "stride", G_TYPE_ARRAY, stride_array,
++      "dmabuf", G_TYPE_ARRAY, dmabuf_array,
++      "planebuf", G_TYPE_ARRAY, planebuf_array,
++      "allocator", G_TYPE_POINTER, &val,
++      "format", G_TYPE_STRING,
++      gst_video_format_to_string (pool->video_info.finfo->format),
++      "n_planes", G_TYPE_INT, n_planes, NULL);
++
++  query = gst_query_new_custom (GST_QUERY_CUSTOM, structure);
++
++  GST_DEBUG_OBJECT (pool, "send a videosink_buffer_creation_request query");
++
++  if (!gst_pad_peer_query (GST_VIDEO_DECODER_SRC_PAD (pool->element), query)) {
++    GST_ERROR_OBJECT (pool, "videosink_buffer_creation_request query failed");
++    return NULL;
++  }
++
++  value = gst_structure_get_value (structure, "buffer");
++  buffer = gst_value_get_buffer (value);
++  if (buffer == NULL) {
++    GST_ERROR_OBJECT (pool,
++        "could not get a buffer from videosink_buffer_creation query");
++    return NULL;
++  }
++
++  gst_query_unref (query);
++
++  g_array_free (dmabuf_array, TRUE);
++  g_array_free (stride_array, TRUE);
++
++  return buffer;
++}
++#endif
++
+ #if defined (HAVE_MMNGRBUF) && defined (HAVE_VIDEODEC_EXT)
+ static gboolean
+ gst_omx_buffer_pool_export_dmabuf (GstOMXBufferPool * pool,
+@@ -406,6 +473,7 @@ gst_omx_buffer_pool_create_buffer_contain_dmabuf (GstOMXBufferPool * self,
+   gint plane_size_ext[GST_VIDEO_MAX_PLANES];
+   gint dmabuf_id[GST_VIDEO_MAX_PLANES];
+   gint page_offset[GST_VIDEO_MAX_PLANES];
++  gint plane_buf[GST_VIDEO_MAX_PLANES];
+   GstBuffer *new_buf;
+   gint i;
+   gint page_size;
+@@ -450,6 +518,7 @@ gst_omx_buffer_pool_create_buffer_contain_dmabuf (GstOMXBufferPool * self,
+     else
+       plane_size[i] = stride[i] *
+           GST_VIDEO_INFO_COMP_HEIGHT (&self->video_info, i);
++    plane_buf[i] = omx_buf->omx_buf->pBuffer + offset[i];
+ 
+     /* When downstream plugins do mapping from dmabuf fd it requires
+      * mapping from boundary page and size align for page size so
+@@ -472,14 +541,40 @@ gst_omx_buffer_pool_create_buffer_contain_dmabuf (GstOMXBufferPool * self,
+     gst_buffer_append_memory (new_buf, mem);
+   }
+ 
+-  g_ptr_array_add (self->buffers, new_buf);
+-  gst_buffer_add_video_meta_full (new_buf, GST_VIDEO_FRAME_FLAG_NONE,
+-      GST_VIDEO_INFO_FORMAT (&self->video_info),
+-      GST_VIDEO_INFO_WIDTH (&self->video_info),
+-      GST_VIDEO_INFO_HEIGHT (&self->video_info),
+-      GST_VIDEO_INFO_N_PLANES (&self->video_info), offset, stride);
++  if (self->vsink_buf_req_supported) {
++    new_buf = gst_omx_buffer_pool_request_videosink_buffer_creation (self,
++      dmabuf_fd, plane_buf, stride);
++    if (!new_buf) {
++      GST_ERROR_OBJECT (self, "creating dmabuf using videosink failed");
++      goto err;
++    }
++    new_buf->pool = self;
++  } else {
++    new_buf = gst_buffer_new ();
++    for (i = 0; i < GST_VIDEO_INFO_N_PLANES (&self->video_info); i++) {
++      GstMemory *mem;
++      /* Set offset's information */
++      mem = gst_dmabuf_allocator_alloc (self->allocator, dmabuf_fd[i],
++          plane_size_ext[i]);
++      mem->offset = page_offset[i];
++      mem->size = plane_size[i];
++      gst_buffer_append_memory (new_buf, mem);
++    }
++
++    gst_buffer_add_video_meta_full (new_buf, GST_VIDEO_FRAME_FLAG_NONE,
++        GST_VIDEO_INFO_FORMAT (&self->video_info),
++        GST_VIDEO_INFO_WIDTH (&self->video_info),
++        GST_VIDEO_INFO_HEIGHT (&self->video_info),
++        GST_VIDEO_INFO_N_PLANES (&self->video_info), offset, stride);
++  }
+ 
++  GST_ERROR_OBJECT (self, "got buffer %p from pool %p",
++    new_buf, new_buf->pool);
++  g_ptr_array_add (self->buffers, new_buf);
+   return new_buf;
++
++err:
++  return NULL;
+ }
+ #endif
+ 
+diff --git a/omx/gstomxvideodec.c b/omx/gstomxvideodec.c
+index 25b6b30..44b706a 100644
+--- a/omx/gstomxvideodec.c
++++ b/omx/gstomxvideodec.c
+@@ -2350,6 +2350,8 @@ gst_omx_video_dec_decide_allocation (GstVideoDecoder * bdec, GstQuery * query)
+           &GST_OMX_BUFFER_POOL (self->out_port_pool)->vsink_buf_req_supported);
+       gst_object_unref (pool);
+       update_pool = TRUE;
++      GST_ERROR_OBJECT (self, "vsink_buf_req_supported %d",
++        GST_OMX_BUFFER_POOL (self->out_port_pool)->vsink_buf_req_supported);
+     }
+ 
+     /* Set pool parameters to our own configuration */
+@@ -2372,7 +2374,14 @@ gst_omx_video_dec_decide_allocation (GstVideoDecoder * bdec, GstQuery * query)
+     }
+ 
+     GST_OMX_BUFFER_POOL (self->out_port_pool)->allocating = TRUE;
+-    gst_buffer_pool_set_active (self->out_port_pool, TRUE);
++    /* This now allocates all the buffers */
++    if (!gst_buffer_pool_set_active (self->out_port_pool, TRUE)) {
++      GST_INFO_OBJECT (self, "Failed to activate internal pool");
++      gst_object_unref (self->out_port_pool);
++      self->out_port_pool = NULL;
++    } else {
++      GST_OMX_BUFFER_POOL (self->out_port_pool)->allocating = FALSE;
++    }
+ 
+     /* This video buffer pool created below will not be used, just setting to
+      * the gstvideodecoder class through a query, because it is
+-- 
+1.7.10.4
+

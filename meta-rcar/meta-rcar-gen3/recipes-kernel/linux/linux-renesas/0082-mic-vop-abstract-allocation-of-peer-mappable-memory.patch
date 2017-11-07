@@ -1,0 +1,272 @@
+From 8724dede5c1d49192b2ae8ef6b1a26a478e187aa Mon Sep 17 00:00:00 2001
+From: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+Date: Wed, 22 Feb 2017 16:58:02 +0300
+Subject: [PATCH 02/17] mic: vop: abstract allocation of peer-mappable memory
+
+This is preparation for use of VOP in non-MIC environment.
+
+In other environments, there are restriction in what memory can be
+mapped by peer. Thus, add vop_hw_ops methods to allocate and free such
+memory. For MIC host and card, implement there methods in the same way
+as VOP code used to allocate memory.
+
+Note that for VOP Host, capability to map arbitrary VOP Guest's memory
+can be still needed to get access to buffers allocated by virtio
+drivers.
+
+Signed-off-by: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+---
+ drivers/misc/mic/bus/vop_bus.h     |  8 ++++++++
+ drivers/misc/mic/card/mic_device.c | 31 +++++++++++++++++++++++++++++++
+ drivers/misc/mic/host/mic_boot.c   | 31 +++++++++++++++++++++++++++++++
+ drivers/misc/mic/vop/vop_main.c    | 21 ++++-----------------
+ drivers/misc/mic/vop/vop_vringh.c  | 29 ++++++++---------------------
+ 5 files changed, 82 insertions(+), 38 deletions(-)
+
+diff --git a/drivers/misc/mic/bus/vop_bus.h b/drivers/misc/mic/bus/vop_bus.h
+index 2442808..5144e85 100644
+--- a/drivers/misc/mic/bus/vop_bus.h
++++ b/drivers/misc/mic/bus/vop_bus.h
+@@ -89,6 +89,9 @@ struct vop_driver {
+  * @send_intr: Send an interrupt to the peer node on a specified doorbell.
+  * @map: Map a remote buffer with the specified DMA address and length.
+  * @unmap: Unmap a buffer previously mapped.
++ * @alloc_mappable: Allocate memory suitable for mapping from remote peer
++ *		    using ->map()
++ * @free_mappable: Free memory allocated by ->alloc_mappable()
+  * @dma_filter: The DMA filter function to use for obtaining access to
+  *		a DMA channel on the peer node.
+  */
+@@ -107,6 +110,11 @@ struct vop_hw_ops {
+ 	void __iomem * (*map)(struct vop_device *vpdev,
+ 				  dma_addr_t pa, size_t len);
+ 	void (*unmap)(struct vop_device *vpdev, void __iomem *va);
++
++	void * (*alloc_mappable)(struct vop_device *vpdev, size_t len,
++			dma_addr_t *dma);
++	void (*free_mappable)(struct vop_device *vpdev, size_t len,
++			void *addr, dma_addr_t dma);
+ };
+ 
+ struct vop_device *
+diff --git a/drivers/misc/mic/card/mic_device.c b/drivers/misc/mic/card/mic_device.c
+index 182e3c9..6d412bc 100644
+--- a/drivers/misc/mic/card/mic_device.c
++++ b/drivers/misc/mic/card/mic_device.c
+@@ -309,6 +309,35 @@ static void __mic_iounmap(struct vop_device *vpdev, void __iomem *va)
+ 	mic_card_unmap(&mdrv->mdev, va);
+ }
+ 
++static void *__mic_alloc_mappable(struct vop_device *vpdev, size_t size,
++		dma_addr_t *dma)
++{
++	void *addr;
++	dma_addr_t cookie;
++
++	addr = (void *) __get_free_pages(GFP_KERNEL | __GFP_ZERO,
++			get_order(size));
++	if (!addr)
++		return NULL;
++
++	cookie = dma_map_single(&vpdev->dev, addr, size,
++			DMA_BIDIRECTIONAL);
++	if (dma_mapping_error(&vpdev->dev, cookie)) {
++		free_pages((unsigned long)addr, get_order(size));
++		return NULL;
++	}
++
++	*dma = cookie;
++	return addr;
++}
++
++static void __mic_free_mappable(struct vop_device *vpdev, size_t size,
++		void *addr, dma_addr_t dma)
++{
++	dma_unmap_single(&vpdev->dev, dma, size, DMA_BIDIRECTIONAL);
++	free_pages((unsigned long)addr, get_order(size));
++}
++
+ static struct vop_hw_ops vop_hw_ops = {
+ 	.request_irq = __mic_request_irq,
+ 	.free_irq = __mic_free_irq,
+@@ -318,6 +347,8 @@ static struct vop_hw_ops vop_hw_ops = {
+ 	.send_intr = __mic_send_intr,
+ 	.map = __mic_ioremap,
+ 	.unmap = __mic_iounmap,
++	.alloc_mappable = __mic_alloc_mappable,
++	.free_mappable = __mic_free_mappable,
+ };
+ 
+ static int mic_request_dma_chans(struct mic_driver *mdrv)
+diff --git a/drivers/misc/mic/host/mic_boot.c b/drivers/misc/mic/host/mic_boot.c
+index 822bab6..d8ca991 100644
+--- a/drivers/misc/mic/host/mic_boot.c
++++ b/drivers/misc/mic/host/mic_boot.c
+@@ -125,6 +125,35 @@ static void __mic_iounmap(struct vop_device *vpdev, void __iomem *va)
+ 	/* nothing to do */
+ }
+ 
++static void *__mic_alloc_mappable(struct vop_device *vpdev, size_t size,
++		dma_addr_t *dma)
++{
++	void *addr;
++	dma_addr_t cookie;
++
++	addr = (void *) __get_free_pages(GFP_KERNEL | __GFP_ZERO,
++			get_order(size));
++	if (!addr)
++		return NULL;
++
++	cookie = dma_map_single(&vpdev->dev, addr, size,
++			DMA_BIDIRECTIONAL);
++	if (dma_mapping_error(&vpdev->dev, cookie)) {
++		free_pages((unsigned long)addr, get_order(size));
++		return NULL;
++	}
++
++	*dma = cookie;
++	return addr;
++}
++
++static void __mic_free_mappable(struct vop_device *vpdev, size_t size,
++		void *addr, dma_addr_t dma)
++{
++	dma_unmap_single(&vpdev->dev, dma, size, DMA_BIDIRECTIONAL);
++	free_pages((unsigned long)addr, get_order(size));
++}
++
+ static struct vop_hw_ops vop_hw_ops = {
+ 	.request_irq = __mic_request_irq,
+ 	.free_irq = __mic_free_irq,
+@@ -135,6 +164,8 @@ static struct vop_hw_ops vop_hw_ops = {
+ 	.send_intr = __mic_send_intr,
+ 	.map = __mic_ioremap,
+ 	.unmap = __mic_iounmap,
++	.alloc_mappable = __mic_alloc_mappable,
++	.free_mappable = __mic_free_mappable,
+ };
+ 
+ static inline struct mic_device *scdev_to_mdev(struct scif_hw_dev *scdev)
+diff --git a/drivers/misc/mic/vop/vop_main.c b/drivers/misc/mic/vop/vop_main.c
+index 095f4d0..1ab13ba 100644
+--- a/drivers/misc/mic/vop/vop_main.c
++++ b/drivers/misc/mic/vop/vop_main.c
+@@ -250,9 +250,8 @@ static void vop_del_vq(struct virtqueue *vq, int n)
+ 	struct vring *vr = (struct vring *)(vq + 1);
+ 	struct vop_device *vpdev = vdev->vpdev;
+ 
+-	dma_unmap_single(&vpdev->dev, vdev->used[n],
+-			 vdev->used_size[n], DMA_BIDIRECTIONAL);
+-	free_pages((unsigned long)vr->used, get_order(vdev->used_size[n]));
++	vpdev->hw_ops->free_mappable(vpdev, vdev->used_size[n],
++			vr->used, vdev->used[n]);
+ 	vring_del_virtqueue(vq);
+ 	vpdev->hw_ops->unmap(vpdev, vdev->vr[n]);
+ 	vdev->vr[n] = NULL;
+@@ -331,23 +330,14 @@ static struct virtqueue *vop_find_vq(struct virtio_device *dev,
+ 	vdev->used_size[index] = PAGE_ALIGN(sizeof(__u16) * 3 +
+ 					     sizeof(struct vring_used_elem) *
+ 					     le16_to_cpu(config.num));
+-	used = (void *)__get_free_pages(GFP_KERNEL | __GFP_ZERO,
+-					get_order(vdev->used_size[index]));
++	used = vpdev->hw_ops->alloc_mappable(vpdev,
++			vdev->used_size[index], &vdev->used[index]);
+ 	if (!used) {
+ 		err = -ENOMEM;
+ 		dev_err(_vop_dev(vdev), "%s %d err %d\n",
+ 			__func__, __LINE__, err);
+ 		goto del_vq;
+ 	}
+-	vdev->used[index] = dma_map_single(&vpdev->dev, used,
+-					    vdev->used_size[index],
+-					    DMA_BIDIRECTIONAL);
+-	if (dma_mapping_error(&vpdev->dev, vdev->used[index])) {
+-		err = -ENOMEM;
+-		dev_err(_vop_dev(vdev), "%s %d err %d\n",
+-			__func__, __LINE__, err);
+-		goto free_used;
+-	}
+ 	writeq(vdev->used[index], &vqconfig->used_address);
+ 	/*
+ 	 * To reassign the used ring here we are directly accessing
+@@ -361,9 +351,6 @@ static struct virtqueue *vop_find_vq(struct virtio_device *dev,
+ 
+ 	vq->priv = vdev;
+ 	return vq;
+-free_used:
+-	free_pages((unsigned long)used,
+-		   get_order(vdev->used_size[index]));
+ del_vq:
+ 	vring_del_virtqueue(vq);
+ unmap:
+diff --git a/drivers/misc/mic/vop/vop_vringh.c b/drivers/misc/mic/vop/vop_vringh.c
+index 73d7925..2775fac 100644
+--- a/drivers/misc/mic/vop/vop_vringh.c
++++ b/drivers/misc/mic/vop/vop_vringh.c
+@@ -311,9 +311,8 @@ static int vop_virtio_add_device(struct vop_vdev *vdev,
+ 		mutex_init(&vvr->vr_mutex);
+ 		vr_size = PAGE_ALIGN(vring_size(num, MIC_VIRTIO_RING_ALIGN) +
+ 			sizeof(struct _mic_vring_info));
+-		vr->va = (void *)
+-			__get_free_pages(GFP_KERNEL | __GFP_ZERO,
+-					 get_order(vr_size));
++		vr->va = vpdev->hw_ops->alloc_mappable(vpdev, vr_size,
++					&vr_addr);
+ 		if (!vr->va) {
+ 			ret = -ENOMEM;
+ 			dev_err(vop_dev(vdev), "%s %d err %d\n",
+@@ -323,15 +322,6 @@ static int vop_virtio_add_device(struct vop_vdev *vdev,
+ 		vr->len = vr_size;
+ 		vr->info = vr->va + vring_size(num, MIC_VIRTIO_RING_ALIGN);
+ 		vr->info->magic = cpu_to_le32(MIC_MAGIC + vdev->virtio_id + i);
+-		vr_addr = dma_map_single(&vpdev->dev, vr->va, vr_size,
+-					 DMA_BIDIRECTIONAL);
+-		if (dma_mapping_error(&vpdev->dev, vr_addr)) {
+-			free_pages((unsigned long)vr->va, get_order(vr_size));
+-			ret = -ENOMEM;
+-			dev_err(vop_dev(vdev), "%s %d err %d\n",
+-				__func__, __LINE__, ret);
+-			goto err;
+-		}
+ 		vqconfig[i].address = cpu_to_le64(vr_addr);
+ 
+ 		vring_init(&vr->vr, num, vr->va, MIC_VIRTIO_RING_ALIGN);
+@@ -342,6 +332,8 @@ static int vop_virtio_add_device(struct vop_vdev *vdev,
+ 		if (ret) {
+ 			dev_err(vop_dev(vdev), "%s %d err %d\n",
+ 				__func__, __LINE__, ret);
++			vpdev->hw_ops->free_mappable(vpdev, vr_size,
++					vr->va, vr_addr);
+ 			goto err;
+ 		}
+ 		vringh_kiov_init(&vvr->riov, NULL, 0);
+@@ -394,11 +386,8 @@ err:
+ 	vqconfig = mic_vq_config(dd);
+ 	for (j = 0; j < i; j++) {
+ 		struct vop_vringh *vvr = &vdev->vvr[j];
+-
+-		dma_unmap_single(&vpdev->dev, le64_to_cpu(vqconfig[j].address),
+-				 vvr->vring.len, DMA_BIDIRECTIONAL);
+-		free_pages((unsigned long)vvr->vring.va,
+-			   get_order(vvr->vring.len));
++		vpdev->hw_ops->free_mappable(vpdev, vvr->vring.len,
++				vvr->vring.va, le64_to_cpu(vqconfig[j].address));
+ 	}
+ 	return ret;
+ }
+@@ -453,10 +442,8 @@ skip_hot_remove:
+ 			   get_order(VOP_INT_DMA_BUF_SIZE));
+ 		vringh_kiov_cleanup(&vvr->riov);
+ 		vringh_kiov_cleanup(&vvr->wiov);
+-		dma_unmap_single(&vpdev->dev, le64_to_cpu(vqconfig[i].address),
+-				 vvr->vring.len, DMA_BIDIRECTIONAL);
+-		free_pages((unsigned long)vvr->vring.va,
+-			   get_order(vvr->vring.len));
++		vpdev->hw_ops->free_mappable(vpdev, vvr->vring.len,
++				vvr->vring.va, le64_to_cpu(vqconfig[i].address));
+ 	}
+ 	/*
+ 	 * Order the type update with previous stores. This write barrier
+-- 
+1.9.1
+

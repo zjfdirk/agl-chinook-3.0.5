@@ -1,0 +1,55 @@
+From 292f377160c78213af88b5cc069dbdaa08db17dd Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jos=C3=A9=20Bollo?= <jose.bollo@iot.bzh>
+Date: Wed, 2 Nov 2016 11:11:01 +0100
+Subject: [PATCH 55/56] Smack: Assign smack_known_web as default smk_in label
+ for kernel thread's socket
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This change fixes the bug associated with sockets owned by kernel threads. These
+sockets, created usually by network devices' drivers tasks, received smk_in
+label from the task that created them - the "floor" label in the most cases. The
+result was that they were not able to receive data packets because of missing
+smack rules. The main reason of the access deny is that the socket smk_in label
+is placed as the object during smk check, kernel thread's capabilities are
+omitted.
+
+Refers-to: http://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/commit/?id=7412301b76bd53ee53b860f611fc3b5b1c2245b5
+Change-Id: Icec88b0d51133df8d0a09ea8016233bde255af10
+Signed-off-by: Marcin Lis <m.lis@samsung.com>
+Signed-off-by: José Bollo <jose.bollo@iot.bzh>
+---
+ security/smack/smack_lsm.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/security/smack/smack_lsm.c b/security/smack/smack_lsm.c
+index 895fe5c..ff696e7 100644
+--- a/security/smack/smack_lsm.c
++++ b/security/smack/smack_lsm.c
+@@ -2453,7 +2453,21 @@ static int smack_inode_setsecurity(struct inode *inode, const char *name,
+ static int smack_socket_post_create(struct socket *sock, int family,
+ 				    int type, int protocol, int kern)
+ {
+-	if (family != PF_INET || sock->sk == NULL)
++	struct socket_smack *ssp;
++
++	if (sock->sk == NULL)
++		return 0;
++
++	/*
++	 * Sockets created by kernel threads receive web label.
++	 */
++	if (unlikely(current->flags & PF_KTHREAD)) {
++		ssp = sock->sk->sk_security;
++		ssp->smk_in = &smack_known_web;
++		ssp->smk_out = &smack_known_web;
++	}
++
++	if (family != PF_INET)
+ 		return 0;
+ 	/*
+ 	 * Set the outbound netlbl.
+-- 
+2.7.4
+

@@ -1,0 +1,34 @@
+From 1efeb1c2415e7b5b5ce3ae0233d6c522f9e89d2d Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Tue, 22 Oct 2013 11:47:45 -0700
+Subject: [PATCH 14/54] Smack: Ptrace access check mode
+
+When the ptrace security hooks were split the addition of
+a mode parameter was not taken advantage of in the Smack
+ptrace access check. This changes the access check from
+always looking for read and write access to using the
+passed mode. This will make use of /proc much happier.
+
+Targeted for git://git.gitorious.org/smack-next/kernel.git
+
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+---
+ security/smack/smack_lsm.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/security/smack/smack_lsm.c b/security/smack/smack_lsm.c
+index 88d366e5..b0be893 100644
+--- a/security/smack/smack_lsm.c
++++ b/security/smack/smack_lsm.c
+@@ -185,7 +185,7 @@ static int smack_ptrace_access_check(struct task_struct *ctp, unsigned int mode)
+ 	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_TASK);
+ 	smk_ad_setfield_u_tsk(&ad, ctp);
+ 
+-	rc = smk_curacc(skp->smk_known, MAY_READWRITE, &ad);
++	rc = smk_curacc(skp->smk_known, mode, &ad);
+ 	return rc;
+ }
+ 
+-- 
+2.1.4
+

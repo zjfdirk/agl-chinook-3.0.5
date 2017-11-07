@@ -1,0 +1,29 @@
+From a7982ea90c9233c737923a9361229bbfc63caa2e Mon Sep 17 00:00:00 2001
+From: Tetsuo Handa <penguin-kernel@I-love.SAKURA.ne.jp>
+Date: Mon, 27 May 2013 20:11:27 +0900
+Subject: [PATCH 04/54] Smack: Fix possible NULL pointer dereference at
+ smk_netlbl_mls()
+
+netlbl_secattr_catmap_alloc(GFP_ATOMIC) can return NULL.
+
+Signed-off-by: Tetsuo Handa <penguin-kernel@I-love.SAKURA.ne.jp>
+---
+ security/smack/smack_access.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/security/smack/smack_access.c b/security/smack/smack_access.c
+index 53f2327..6a0377f 100644
+--- a/security/smack/smack_access.c
++++ b/security/smack/smack_access.c
+@@ -403,6 +403,8 @@ int smk_netlbl_mls(int level, char *catset, struct netlbl_lsm_secattr *sap,
+ 	sap->flags |= NETLBL_SECATTR_MLS_CAT;
+ 	sap->attr.mls.lvl = level;
+ 	sap->attr.mls.cat = netlbl_secattr_catmap_alloc(GFP_ATOMIC);
++	if (!sap->attr.mls.cat)
++		return -ENOMEM;
+ 	sap->attr.mls.cat->startbit = 0;
+ 
+ 	for (cat = 1, cp = catset, byte = 0; byte < len; cp++, byte++)
+-- 
+2.1.4
+

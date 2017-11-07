@@ -1,0 +1,54 @@
+From 2ab14fe1a67d90eee2601ba7e1d6cf3bab289b73 Mon Sep 17 00:00:00 2001
+From: Yoshihiro Shimoda <yoshihiro.shimoda.uh@renesas.com>
+Date: Fri, 11 Nov 2016 15:13:26 +0200
+Subject: [PATCH 3/4] usb: host: xhci: rcar: add a new firmware version for
+ r8a7796
+
+This patch adds a new firmware version "V3" for r8a7796. This patch
+also adds explanation of each version's information.
+
+Signed-off-by: Yoshihiro Shimoda <yoshihiro.shimoda.uh@renesas.com>
+Signed-off-by: Mathias Nyman <mathias.nyman@linux.intel.com>
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Signed-off-by: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+---
+ drivers/usb/host/xhci-rcar.c | 3 +++
+ drivers/usb/host/xhci-rcar.h | 1 +
+ 2 files changed, 4 insertions(+)
+
+diff --git a/drivers/usb/host/xhci-rcar.c b/drivers/usb/host/xhci-rcar.c
+index d532b1cda6cc..17abe971cdbd 100644
+--- a/drivers/usb/host/xhci-rcar.c
++++ b/drivers/usb/host/xhci-rcar.c
+@@ -19,6 +19,8 @@
+ #include "xhci-rcar.h"
+ 
+ /*
++* - The V3 firmware is for r8a7796 (with good performance).
++* - The V2 firmware can be used on both r8a7795 (es1.x) and r8a7796.
+ * - The V2 firmware is possible to use on R-Car Gen2. However, the V2 causes
+ *   performance degradation. So, this driver continues to use the V1 if R-Car
+ *   Gen2.
+@@ -26,6 +28,7 @@
+ */
+ MODULE_FIRMWARE(XHCI_RCAR_FIRMWARE_NAME_V1);
+ MODULE_FIRMWARE(XHCI_RCAR_FIRMWARE_NAME_V2);
++MODULE_FIRMWARE(XHCI_RCAR_FIRMWARE_NAME_V3);
+ 
+ /*** Register Offset ***/
+ #define RCAR_USB3_INT_ENA	0x224	/* Interrupt Enable */
+diff --git a/drivers/usb/host/xhci-rcar.h b/drivers/usb/host/xhci-rcar.h
+index 2941a25cfe98..d2ffe20401cf 100644
+--- a/drivers/usb/host/xhci-rcar.h
++++ b/drivers/usb/host/xhci-rcar.h
+@@ -13,6 +13,7 @@
+ 
+ #define XHCI_RCAR_FIRMWARE_NAME_V1	"r8a779x_usb3_v1.dlmem"
+ #define XHCI_RCAR_FIRMWARE_NAME_V2	"r8a779x_usb3_v2.dlmem"
++#define XHCI_RCAR_FIRMWARE_NAME_V3	"r8a779x_usb3_v3.dlmem"
+ 
+ #if IS_ENABLED(CONFIG_USB_XHCI_RCAR)
+ void xhci_rcar_start(struct usb_hcd *hcd);
+-- 
+2.13.0
+

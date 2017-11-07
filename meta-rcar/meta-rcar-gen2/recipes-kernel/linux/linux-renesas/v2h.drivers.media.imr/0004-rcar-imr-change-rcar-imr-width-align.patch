@@ -1,0 +1,28 @@
+From 9e1bccbfc3c6ca392b426bdbc63f3a36c9dcf6bd Mon Sep 17 00:00:00 2001
+From: Roman Meshkevich <roman.meshkevich@cogentembedded.com>
+Date: Tue, 28 Feb 2017 12:41:24 +0300
+Subject: [PATCH] rcar-imr: change rcar-imr width align
+
+---
+ drivers/media/platform/rcar_imr.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/media/platform/rcar_imr.c b/drivers/media/platform/rcar_imr.c
+index ac397eb..27885e2 100644
+--- a/drivers/media/platform/rcar_imr.c
++++ b/drivers/media/platform/rcar_imr.c
+@@ -1044,9 +1044,9 @@ static int __imr_try_fmt(struct imr_ctx *ctx, struct v4l2_format *f)
+ 
+ 			/* ...verify source/destination image dimensions */
+ 			if (V4L2_TYPE_IS_OUTPUT(f->type))
+-				v4l_bound_align_image(&pix->width, 128, 2048, 7, &pix->height, 16, 2048, 1, 0);
++				v4l_bound_align_image(&pix->width, 128, 2048, 7, &pix->height, 1, 2048, 0, 0);
+ 			else
+-				v4l_bound_align_image(&pix->width, 64, 2048, 6, &pix->height, 16, 2048, 1, 0);
++				v4l_bound_align_image(&pix->width, 64, 2048, 6, &pix->height, 1, 2048, 0, 0);
+ 
+ 			return i;
+ 		}
+-- 
+2.7.4
+

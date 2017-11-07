@@ -1,0 +1,26 @@
+From 9df040dabaec1697f81b71f15739b499f3e4266e Mon Sep 17 00:00:00 2001
+From: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+Date: Fri, 9 Jun 2017 20:12:26 +0300
+Subject: [PATCH] ADV7511: limit maximum pixelclock
+
+Signed-off-by: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+---
+ drivers/gpu/drm/i2c/adv7511.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/i2c/adv7511.c b/drivers/gpu/drm/i2c/adv7511.c
+index 9698c21813dc..8914d64b7589 100644
+--- a/drivers/gpu/drm/i2c/adv7511.c
++++ b/drivers/gpu/drm/i2c/adv7511.c
+@@ -647,7 +647,7 @@ adv7511_detect(struct adv7511 *adv7511, struct drm_connector *connector)
+ static int adv7511_mode_valid(struct adv7511 *adv7511,
+ 			      struct drm_display_mode *mode)
+ {
+-	if (mode->clock > 165000)
++	if (mode->clock > 133000)
+ 		return MODE_CLOCK_HIGH;
+ 
+ 	return MODE_OK;
+-- 
+2.13.0
+

@@ -1,0 +1,61 @@
+From 99719d12de612819e06fc3d0741b7e2da119d61c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jos=C3=A9=20Bollo?= <jose.bollo@iot.bzh>
+Date: Wed, 2 Nov 2016 18:32:32 +0100
+Subject: [PATCH] Smack: handles socket in file_receive
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The security context of sockets and the rules
+of security are differents for sockets.
+
+This is a backport of http://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/commit/?id=79be09350
+
+Change-Id: Id520c9ca8f7ee8883523a0e4b40176524442db33
+Signed-off-by: José Bollo <jose.bollo@iot.bzh>
+---
+ security/smack/smack_lsm.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/security/smack/smack_lsm.c b/security/smack/smack_lsm.c
+index 94914db..3b09524 100644
+--- a/security/smack/smack_lsm.c
++++ b/security/smack/smack_lsm.c
+@@ -1638,9 +1638,34 @@ static int smack_file_receive(struct file *file)
+ 	int may = 0;
+ 	struct smk_audit_info ad;
+ 	struct inode *inode = file_inode(file);
++	struct socket *sock;
++	struct task_smack *tsp;
++	struct socket_smack *ssp;
++
++	if (unlikely(IS_PRIVATE(inode)))
++		return 0;
+ 
+ 	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_PATH);
+ 	smk_ad_setfield_u_fs_path(&ad, file->f_path);
++
++	if (S_ISSOCK(inode->i_mode)) {
++		sock = SOCKET_I(inode);
++		ssp = sock->sk->sk_security;
++		tsp = current_security();
++		/*
++		 * If the receiving process can't write to the
++		 * passed socket or if the passed socket can't
++		 * write to the receiving process don't accept
++		 * the passed socket.
++		 */
++		rc = smk_access(tsp->smk_task, ssp->smk_out, MAY_WRITE, &ad);
++		rc = smk_bu_file(file, may, rc);
++		if (rc < 0)
++			return rc;
++		rc = smk_access(ssp->smk_in, tsp->smk_task, MAY_WRITE, &ad);
++		rc = smk_bu_file(file, may, rc);
++		return rc;
++	}
+ 	/*
+ 	 * This code relies on bitmasks.
+ 	 */
+-- 
+2.7.4
+

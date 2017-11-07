@@ -1,0 +1,56 @@
+From 11d11ff47a952f09a85be5ed85c83ee19f8a74d2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=C5=81ukasz=20Stelmach?= <l.stelmach@samsung.com>
+Date: Tue, 16 Dec 2014 16:53:08 +0100
+Subject: [PATCH 47/54] smack: introduce a special case for tmpfs in
+ smack_d_instantiate()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Files created with __shmem_file_stup() appear to have somewhat fake
+dentries which make them look like root directories and not get
+the label the current process or ("*") star meant for tmpfs files.
+
+Signed-off-by: Łukasz Stelmach <l.stelmach@samsung.com>
+---
+ security/smack/smack_lsm.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/security/smack/smack_lsm.c b/security/smack/smack_lsm.c
+index 2ec6cdb..bc43227 100644
+--- a/security/smack/smack_lsm.c
++++ b/security/smack/smack_lsm.c
+@@ -3037,7 +3037,8 @@ static void smack_d_instantiate(struct dentry *opt_dentry, struct inode *inode)
+ 	 * of the superblock.
+ 	 */
+ 	if (opt_dentry->d_parent == opt_dentry) {
+-		if (sbp->s_magic == CGROUP_SUPER_MAGIC) {
++		switch (sbp->s_magic) {
++		case CGROUP_SUPER_MAGIC:
+ 			/*
+ 			 * The cgroup filesystem is never mounted,
+ 			 * so there's no opportunity to set the mount
+@@ -3045,8 +3046,19 @@ static void smack_d_instantiate(struct dentry *opt_dentry, struct inode *inode)
+ 			 */
+ 			sbsp->smk_root = &smack_known_star;
+ 			sbsp->smk_default = &smack_known_star;
++			isp->smk_inode = sbsp->smk_root;
++			break;
++		case TMPFS_MAGIC:
++			/*
++			 * What about shmem/tmpfs anonymous files with dentry
++			 * obtained from d_alloc_pseudo()?
++			 */
++			isp->smk_inode = smk_of_current();
++			break;
++		default:
++			isp->smk_inode = sbsp->smk_root;
++			break;
+ 		}
+-		isp->smk_inode = sbsp->smk_root;
+ 		isp->smk_flags |= SMK_INODE_INSTANT;
+ 		goto unlockandout;
+ 	}
+-- 
+2.1.4
+

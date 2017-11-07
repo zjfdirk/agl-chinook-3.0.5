@@ -1,0 +1,54 @@
+From 0deef39b9b9987a1ecab1cbc568b725e61b71f48 Mon Sep 17 00:00:00 2001
+From: Roman Meshkevich <roman.meshkevich@cogentembedded.com>
+Date: Tue, 28 Feb 2017 12:45:15 +0300
+Subject: [PATCH] arch: dts: r8a7792: remove unused sgx clk
+
+---
+ arch/arm/boot/dts/r8a7792-wheat.dts | 3 +++
+ arch/arm/boot/dts/r8a7792.dtsi      | 8 ++++----
+ 2 files changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/arch/arm/boot/dts/r8a7792-wheat.dts b/arch/arm/boot/dts/r8a7792-wheat.dts
+index d98c02a..d12fdf9 100644
+--- a/arch/arm/boot/dts/r8a7792-wheat.dts
++++ b/arch/arm/boot/dts/r8a7792-wheat.dts
+@@ -496,3 +496,6 @@
+ 		};
+ 	};
+ };
++&sgx {
++        status = "okay";
++};
+diff --git a/arch/arm/boot/dts/r8a7792.dtsi b/arch/arm/boot/dts/r8a7792.dtsi
+index 4a635da..92fce77 100644
+--- a/arch/arm/boot/dts/r8a7792.dtsi
++++ b/arch/arm/boot/dts/r8a7792.dtsi
+@@ -34,6 +34,7 @@
+ 		vin3 = &vin3;
+ 		vin4 = &vin4;
+ 		vin5 = &vin5;
++		sgx = &sgx;
+ 	};
+ 
+ 	cpus {
+@@ -131,14 +132,13 @@
+ 			reg = <0 0xe6060000 0 0x144>;
+ 		};
+ 
+-		sgx@fd800000 {
++		sgx: sgx@fd800000 {
+ 			compatible = "renesas,sgx";
+ 			reg = <0 0xfd800000 0 0x10000>;
+ 			interrupts = <0 119 IRQ_TYPE_LEVEL_HIGH>;
+ 			interrupt-names = "irq_sgx";
+-			clocks = <&mstp1_clks R8A7792_CLK_3DG>,
+-				 <&mstp8_clks R8A7792_CLK_IPMMU_SGX>;
+-			clock-names = "sgx_clk", "ipmmu_clk";
++			clocks = <&mstp1_clks R8A7792_CLK_3DG>;
++			clock-names = "sgx_clk";
+ 			power-domains = <&sysc R8A7792_PD_SGX>;
+ 		};
+ 
+-- 
+2.7.4
+

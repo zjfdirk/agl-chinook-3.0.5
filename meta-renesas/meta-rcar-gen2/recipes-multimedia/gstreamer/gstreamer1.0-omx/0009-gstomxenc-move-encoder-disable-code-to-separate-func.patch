@@ -1,0 +1,113 @@
+From 0a9f0aa8271b0fc18c7e9781e3d0bc215ba2fd02 Mon Sep 17 00:00:00 2001
+From: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+Date: Thu, 1 Sep 2016 17:58:33 +0300
+Subject: [PATCH 09/10] gstomxenc: move encoder disable code to separate
+ function
+
+
+Signed-off-by: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+---
+ omx/gstomxvideoenc.c |   79 ++++++++++++++++++++++++++++----------------------
+ 1 file changed, 45 insertions(+), 34 deletions(-)
+
+diff --git a/omx/gstomxvideoenc.c b/omx/gstomxvideoenc.c
+index 19a0eb9..6720648 100644
+--- a/omx/gstomxvideoenc.c
++++ b/omx/gstomxvideoenc.c
+@@ -1147,6 +1147,49 @@ gst_omx_video_enc_get_supported_colorformats (GstOMXVideoEnc * self)
+ }
+ 
+ static gboolean
++gst_omx_video_enc_disable(GstVideoEncoder * encoder)
++{
++  GstOMXVideoEnc *self;
++
++  self = GST_OMX_VIDEO_ENC (encoder);
++
++  GST_DEBUG_OBJECT (self, "Need to disable and drain encoder");
++  gst_omx_video_enc_drain (self, FALSE);
++  gst_omx_port_set_flushing (self->enc_out_port, 5 * GST_SECOND, TRUE);
++
++  /* Wait until the srcpad loop is finished,
++   * unlock GST_VIDEO_ENCODER_STREAM_LOCK to prevent deadlocks
++   * caused by using this lock from inside the loop function */
++  GST_VIDEO_ENCODER_STREAM_UNLOCK (self);
++  gst_pad_stop_task (GST_VIDEO_ENCODER_SRC_PAD (encoder));
++  GST_VIDEO_ENCODER_STREAM_LOCK (self);
++
++  if (gst_omx_port_set_enabled (self->enc_in_port, FALSE) != OMX_ErrorNone)
++    return FALSE;
++  if (gst_omx_port_set_enabled (self->enc_out_port, FALSE) != OMX_ErrorNone)
++    return FALSE;
++  if (gst_omx_port_wait_buffers_released (self->enc_in_port,
++          5 * GST_SECOND) != OMX_ErrorNone)
++    return FALSE;
++  if (gst_omx_port_wait_buffers_released (self->enc_out_port,
++          1 * GST_SECOND) != OMX_ErrorNone)
++    return FALSE;
++  if (gst_omx_port_deallocate_buffers (self->enc_in_port) != OMX_ErrorNone)
++    return FALSE;
++  if (gst_omx_port_deallocate_buffers (self->enc_out_port) != OMX_ErrorNone)
++    return FALSE;
++  if (gst_omx_port_wait_enabled (self->enc_in_port,
++          1 * GST_SECOND) != OMX_ErrorNone)
++    return FALSE;
++  if (gst_omx_port_wait_enabled (self->enc_out_port,
++          1 * GST_SECOND) != OMX_ErrorNone)
++    return FALSE;
++
++  GST_DEBUG_OBJECT (self, "Encoder drained and disabled");
++  return TRUE;
++}
++
++static gboolean
+ gst_omx_video_enc_set_format (GstVideoEncoder * encoder,
+     GstVideoCodecState * state)
+ {
+@@ -1176,41 +1219,9 @@ gst_omx_video_enc_set_format (GstVideoEncoder * encoder,
+      * we have to disable the port and re-allocate all buffers. If no real
+      * format change happened we can just exit here.
+      */
+-    if (needs_disable) {
+-      GST_DEBUG_OBJECT (self, "Need to disable and drain encoder");
+-      gst_omx_video_enc_drain (self, FALSE);
+-      gst_omx_port_set_flushing (self->enc_out_port, 5 * GST_SECOND, TRUE);
+-
+-      /* Wait until the srcpad loop is finished,
+-       * unlock GST_VIDEO_ENCODER_STREAM_LOCK to prevent deadlocks
+-       * caused by using this lock from inside the loop function */
+-      GST_VIDEO_ENCODER_STREAM_UNLOCK (self);
+-      gst_pad_stop_task (GST_VIDEO_ENCODER_SRC_PAD (encoder));
+-      GST_VIDEO_ENCODER_STREAM_LOCK (self);
+-
+-      if (gst_omx_port_set_enabled (self->enc_in_port, FALSE) != OMX_ErrorNone)
++    if (needs_disable)
++      if (!gst_omx_video_enc_disable(encoder))
+         return FALSE;
+-      if (gst_omx_port_set_enabled (self->enc_out_port, FALSE) != OMX_ErrorNone)
+-        return FALSE;
+-      if (gst_omx_port_wait_buffers_released (self->enc_in_port,
+-              5 * GST_SECOND) != OMX_ErrorNone)
+-        return FALSE;
+-      if (gst_omx_port_wait_buffers_released (self->enc_out_port,
+-              1 * GST_SECOND) != OMX_ErrorNone)
+-        return FALSE;
+-      if (gst_omx_port_deallocate_buffers (self->enc_in_port) != OMX_ErrorNone)
+-        return FALSE;
+-      if (gst_omx_port_deallocate_buffers (self->enc_out_port) != OMX_ErrorNone)
+-        return FALSE;
+-      if (gst_omx_port_wait_enabled (self->enc_in_port,
+-              1 * GST_SECOND) != OMX_ErrorNone)
+-        return FALSE;
+-      if (gst_omx_port_wait_enabled (self->enc_out_port,
+-              1 * GST_SECOND) != OMX_ErrorNone)
+-        return FALSE;
+-
+-      GST_DEBUG_OBJECT (self, "Encoder drained and disabled");
+-    }
+ 
+     negotiation_map = gst_omx_video_enc_get_supported_colorformats (self);
+     if (!negotiation_map) {
+-- 
+1.7.10.4
+

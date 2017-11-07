@@ -1,0 +1,70 @@
+From ee4d14e83d8f2a8a746d97bd7200dc54e7ea4638 Mon Sep 17 00:00:00 2001
+From: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+Date: Wed, 22 Feb 2017 16:58:02 +0300
+Subject: [PATCH 08/17] mic: vop: allow enforcement of dma-mapping of virtio
+ data buffers
+
+This is preparation for use of VOP in non-MIC environment.
+
+On some setups, access to Guest's data buffer does not work if Guest did
+not dma_map() it.
+
+This adds a flag to vop_device that indicates need of buffer
+dma-mapping. Flag can be set in vop device's setup_dma() method.
+
+Signed-off-by: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+---
+ drivers/misc/mic/bus/vop_bus.h  | 2 ++
+ drivers/misc/mic/vop/vop_main.c | 9 +++++++++
+ 2 files changed, 11 insertions(+)
+
+diff --git a/drivers/misc/mic/bus/vop_bus.h b/drivers/misc/mic/bus/vop_bus.h
+index 0837f09..d5d131f 100644
+--- a/drivers/misc/mic/bus/vop_bus.h
++++ b/drivers/misc/mic/bus/vop_bus.h
+@@ -50,6 +50,7 @@ struct vop_device_id {
+  * @aper: Aperture memory window
+  * @dma_ch - DMA channel
+  * @index: unique position on the vop bus
++ * @use_dma_api: if child virtio devices must use DMA mapping API
+  */
+ struct vop_device {
+ 	struct vop_hw_ops *hw_ops;
+@@ -59,6 +60,7 @@ struct vop_device {
+ 	struct mic_mw *aper;
+ 	struct dma_chan *dma_ch;
+ 	int index;
++	bool use_dma_api;
+ };
+ 
+ /**
+diff --git a/drivers/misc/mic/vop/vop_main.c b/drivers/misc/mic/vop/vop_main.c
+index b22e8f5..edf4d49 100644
+--- a/drivers/misc/mic/vop/vop_main.c
++++ b/drivers/misc/mic/vop/vop_main.c
+@@ -398,6 +398,14 @@ error:
+ 	return err;
+ }
+ 
++static bool vop_use_dma_api(struct virtio_device *dev)
++{
++	struct _vop_vdev *vdev = to_vopvdev(dev);
++	struct vop_device *vpdev = vdev->vpdev;
++
++	return vpdev->use_dma_api;
++}
++
+ /*
+  * The config ops structure as defined by virtio config
+  */
+@@ -411,6 +419,7 @@ static struct virtio_config_ops vop_vq_config_ops = {
+ 	.reset = vop_reset,
+ 	.find_vqs = vop_find_vqs,
+ 	.del_vqs = vop_del_vqs,
++	.use_dma_api = vop_use_dma_api,
+ };
+ 
+ static irqreturn_t vop_virtio_intr_handler(int irq, void *data)
+-- 
+1.9.1
+

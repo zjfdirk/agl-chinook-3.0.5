@@ -1,0 +1,47 @@
+From d1025433f05ebeb1a790abefa5cfc48455bf441c Mon Sep 17 00:00:00 2001
+From: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+Date: Thu, 1 Sep 2016 17:57:10 +0300
+Subject: [PATCH 08/10] gstomxenc: do not allocate output buffers two times
+
+
+Signed-off-by: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+---
+ omx/gstomxvideoenc.c |   17 ++++++++++-------
+ 1 file changed, 10 insertions(+), 7 deletions(-)
+
+diff --git a/omx/gstomxvideoenc.c b/omx/gstomxvideoenc.c
+index e96ff28..19a0eb9 100644
+--- a/omx/gstomxvideoenc.c
++++ b/omx/gstomxvideoenc.c
+@@ -1338,18 +1338,21 @@ gst_omx_video_enc_set_format (GstVideoEncoder * encoder,
+     if (gst_omx_port_mark_reconfigured (self->enc_in_port) != OMX_ErrorNone)
+       return FALSE;
+   } else {
+-    if (gst_omx_component_set_state (self->enc, OMX_StateIdle) != OMX_ErrorNone)
+-      return FALSE;
+-
+-    /* Need to allocate buffers to reach Idle state */
++    /* if is not done in propose_allocation */
+     if (!self->in_port_pool) {
++      if (gst_omx_component_set_state (self->enc, OMX_StateIdle) != OMX_ErrorNone)
++        return FALSE;
++
++      /* Need to allocate buffers to reach Idle state */
++      /* Allocate for input port */
+       if (gst_omx_port_allocate_buffers (self->enc_in_port) != OMX_ErrorNone)
+         return FALSE;
++
++      /* Allocate for output port */
++      if (gst_omx_port_allocate_buffers (self->enc_out_port) != OMX_ErrorNone)
++        return FALSE;
+     }
+ 
+-    /* Allocate for output port */
+-    if (gst_omx_port_allocate_buffers (self->enc_out_port) != OMX_ErrorNone)
+-       return FALSE;
+     if (gst_omx_component_get_state (self->enc,
+             GST_CLOCK_TIME_NONE) != OMX_StateIdle)
+       return FALSE;
+-- 
+1.7.10.4
+

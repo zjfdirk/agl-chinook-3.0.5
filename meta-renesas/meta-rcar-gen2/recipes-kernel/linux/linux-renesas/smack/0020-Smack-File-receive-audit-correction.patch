@@ -1,0 +1,39 @@
+From bc7377d7cd27b9d17384e1486ac769a37cf8f745 Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Mon, 30 Dec 2013 17:37:45 -0800
+Subject: [PATCH 20/54] Smack: File receive audit correction
+
+Eric Paris politely points out:
+
+    Inside smack_file_receive() it seems like you are initting the audit
+    field with LSM_AUDIT_DATA_TASK.  And then use
+    smk_ad_setfield_u_fs_path().
+
+    Seems like LSM_AUDIT_DATA_PATH would make more sense.  (and depending
+    on how it's used fix a crash...)
+
+He is correct. This puts things in order.
+
+Targeted for git://git.gitorious.org/smack-next/kernel.git
+
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+---
+ security/smack/smack_lsm.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/security/smack/smack_lsm.c b/security/smack/smack_lsm.c
+index d552832..d814e35 100644
+--- a/security/smack/smack_lsm.c
++++ b/security/smack/smack_lsm.c
+@@ -1351,7 +1351,7 @@ static int smack_file_receive(struct file *file)
+ 	int may = 0;
+ 	struct smk_audit_info ad;
+ 
+-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_TASK);
++	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_PATH);
+ 	smk_ad_setfield_u_fs_path(&ad, file->f_path);
+ 	/*
+ 	 * This code relies on bitmasks.
+-- 
+2.1.4
+

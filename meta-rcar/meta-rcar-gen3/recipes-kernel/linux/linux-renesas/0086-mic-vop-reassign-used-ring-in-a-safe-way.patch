@@ -1,0 +1,95 @@
+From 6aff26a8fdd99981455c8ca7815813d8037cf877 Mon Sep 17 00:00:00 2001
+From: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+Date: Wed, 22 Feb 2017 21:43:09 +0300
+Subject: [PATCH 06/17] mic: vop: reassign used ring in a safe way
+
+There is __vring_new_virtqueue() routine that creates virtual queue with
+caller-supplied layout. Use that instead of hijacking foreign private
+structure.
+
+Signed-off-by: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+---
+ drivers/misc/mic/vop/vop_main.c | 43 ++++++++++++++++-------------------------
+ 1 file changed, 17 insertions(+), 26 deletions(-)
+
+diff --git a/drivers/misc/mic/vop/vop_main.c b/drivers/misc/mic/vop/vop_main.c
+index 050aedf..b22e8f5 100644
+--- a/drivers/misc/mic/vop/vop_main.c
++++ b/drivers/misc/mic/vop/vop_main.c
+@@ -286,9 +286,8 @@ static struct virtqueue *vop_find_vq(struct virtio_device *dev,
+ 	struct virtqueue *vq;
+ 	void __iomem *va;
+ 	struct _mic_vring_info __iomem *info;
+-	void *used;
+ 	int vr_size, err, magic;
+-	struct vring *vr;
++	struct vring vring;
+ 	u8 type = ioread8(&vdev->desc->type);
+ 	u16 num;
+ 
+@@ -309,16 +308,9 @@ static struct virtqueue *vop_find_vq(struct virtio_device *dev,
+ 		return ERR_PTR(-ENOMEM);
+ 	vdev->vr[index] = va;
+ 	memset_io(va, 0x0, vring_size(num, MIC_VIRTIO_RING_ALIGN));
+-	vq = vring_new_virtqueue(
+-				index,
+-				le16_to_cpu(config.num), MIC_VIRTIO_RING_ALIGN,
+-				dev,
+-				false,
+-				(void __force *)va, vop_notify, callback, name);
+-	if (!vq) {
+-		err = -ENOMEM;
+-		goto unmap;
+-	}
++
++	vring_init(&vring, num, va, MIC_VIRTIO_RING_ALIGN);
++
+ 	info = va + MIC_VR_INFO_OFFSET(num);
+ 	magic = ioread32(&info->magic);
+ 
+@@ -331,29 +323,28 @@ static struct virtqueue *vop_find_vq(struct virtio_device *dev,
+ 	vdev->used_size[index] = PAGE_ALIGN(sizeof(__u16) * 3 +
+ 					     sizeof(struct vring_used_elem) *
+ 					     le16_to_cpu(config.num));
+-	used = vpdev->hw_ops->alloc_mappable(vpdev,
++	vring.used = vpdev->hw_ops->alloc_mappable(vpdev,
+ 			vdev->used_size[index], &vdev->used[index]);
+-	if (!used) {
++	if (!vring.used) {
+ 		err = -ENOMEM;
+ 		dev_err(_vop_dev(vdev), "%s %d err %d\n",
+ 			__func__, __LINE__, err);
+-		goto del_vq;
++		goto unmap;
+ 	}
+ 	writeq(vdev->used[index], &vqconfig->used_address);
+-	/*
+-	 * To reassign the used ring here we are directly accessing
+-	 * struct vring_virtqueue which is a private data structure
+-	 * in virtio_ring.c. At the minimum, a BUILD_BUG_ON() in
+-	 * vring_new_virtqueue() would ensure that
+-	 *  (&vq->vring == (struct vring *) (&vq->vq + 1));
+-	 */
+-	vr = (struct vring *)(vq + 1);
+-	vr->used = used;
++
++	vq = __vring_new_virtqueue(index, vring, dev, false, vop_notify,
++			callback, name);
++	if (!vq) {
++		err = -ENOMEM;
++		goto free_used;
++	}
+ 
+ 	vq->priv = vdev;
+ 	return vq;
+-del_vq:
+-	vring_del_virtqueue(vq);
++free_used:
++	vpdev->hw_ops->free_mappable(vpdev, vdev->used_size[index],
++			vring.used, vdev->used[index]);
+ unmap:
+ 	vpdev->hw_ops->unmap(vpdev, vdev->vr[index]);
+ 	return ERR_PTR(err);
+-- 
+1.9.1
+

@@ -1,0 +1,65 @@
+From 1fe52cec8fec530a79eb3ab9f313bb860ec109be Mon Sep 17 00:00:00 2001
+From: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+Date: Thu, 1 Sep 2016 18:44:49 +0300
+Subject: [PATCH 04/10] Export a first dmabuf file descriptor with the whole
+ size
+
+This patch exports a dmabuf file descriptor from the head of Y plane
+to the end of the buffer so that mapping the whole plane as
+contiguous memory is available.
+
+Signed-off-by: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+---
+ omx/gstomxbufferpool.c |   17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/omx/gstomxbufferpool.c b/omx/gstomxbufferpool.c
+index 2585a72..b9fa769 100644
+--- a/omx/gstomxbufferpool.c
++++ b/omx/gstomxbufferpool.c
+@@ -399,6 +399,7 @@ gst_omx_buffer_pool_create_buffer_contain_dmabuf (GstOMXBufferPool * self,
+   gint i;
+   gint page_size;
+   guint phys_addr = 0;
++  guint phys_size = 0;
+ 
+   new_buf = gst_buffer_new ();
+   page_size = getpagesize ();
+@@ -410,13 +411,15 @@ gst_omx_buffer_pool_create_buffer_contain_dmabuf (GstOMXBufferPool * self,
+     OMXR_MC_VIDEO_DECODERESULTTYPE *decode_res =
+         (OMXR_MC_VIDEO_DECODERESULTTYPE *) omx_buf->omx_buf->pOutputPortPrivate;
+     phys_addr = decode_res->pvPhysImageAddressY;
++    phys_size = (guint) omx_buf->omx_buf->nAllocLen;
+   } else if (GST_IS_OMX_VIDEO_ENC (self->element)) {
+     /* private data is a physical address of HW buffer */
+     phys_addr = (guint) omx_buf->omx_buf->pInputPortPrivate;
++    phys_size = (guint) omx_buf->omx_buf->nAllocLen;
+   }
+ 
+-  if (phys_addr == 0) {
+-    GST_ERROR_OBJECT (self, "Invalid phys addr for OMX buffer");
++  if ((phys_addr == 0) || (phys_size == 0)) {
++    GST_ERROR_OBJECT (self, "Invalid phys range for OMX buffer");
+     return NULL;
+   }
+ 
+@@ -428,8 +431,14 @@ gst_omx_buffer_pool_create_buffer_contain_dmabuf (GstOMXBufferPool * self,
+     /* Calculate offset between physical address and page boundary */
+     page_offset[i] = plane_addr & (page_size - 1);
+ 
+-    plane_size[i] = stride[i] *
+-        GST_VIDEO_INFO_COMP_HEIGHT (&self->video_info, i);
++    /* Export a dmabuf file descriptor from the head of Y plane to
++     * the end of the buffer so that mapping the whole plane as
++     * contiguous memory is available. */
++    if (i == 0)
++      plane_size[i] = phys_size;
++    else
++      plane_size[i] = stride[i] *
++          GST_VIDEO_INFO_COMP_HEIGHT (&self->video_info, i);
+ 
+     /* When downstream plugins do mapping from dmabuf fd it requires
+      * mapping from boundary page and size align for page size so
+-- 
+1.7.10.4
+

@@ -1,0 +1,55 @@
+From 618719c14729b2c9ef82cb462308671d11284a38 Mon Sep 17 00:00:00 2001
+From: Dmitry Kasatkin <d.kasatkin@samsung.com>
+Date: Fri, 14 Mar 2014 17:44:49 +0000
+Subject: [PATCH 22/54] smack: fix key permission verification
+
+For any keyring access type SMACK always used MAY_READWRITE access check.
+It prevents reading the key with label "_", which should be allowed for anyone.
+
+This patch changes default access check to MAY_READ and use MAY_READWRITE in only
+appropriate cases.
+
+Change-Id: I372968d614550d4c691301b2ef4b6478e76c62bf
+Signed-off-by: Dmitry Kasatkin <d.kasatkin@samsung.com>
+Signed-off-by: David Howells <dhowells@redhat.com>
+Acked-by: Casey Schaufler <casey@schaufler-ca.com>
+---
+ security/smack/smack_lsm.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/security/smack/smack_lsm.c b/security/smack/smack_lsm.c
+index 14f52be..16dcf7f 100644
+--- a/security/smack/smack_lsm.c
++++ b/security/smack/smack_lsm.c
+@@ -3465,6 +3465,7 @@ static void smack_inet_csk_clone(struct sock *sk,
+  * If you care about keys please have a look.
+  */
+ #ifdef CONFIG_KEYS
++#include "../keys/internal.h" /* HACK FOR THE BACKPORT */
+ 
+ /**
+  * smack_key_alloc - Set the key security blob
+@@ -3511,6 +3512,7 @@ static int smack_key_permission(key_ref_t key_ref,
+ 	struct key *keyp;
+ 	struct smk_audit_info ad;
+ 	struct smack_known *tkp = smk_of_task(cred->security);
++	int request = 0;
+ 
+ 	keyp = key_ref_to_ptr(key_ref);
+ 	if (keyp == NULL)
+@@ -3531,7 +3533,11 @@ static int smack_key_permission(key_ref_t key_ref,
+ 	ad.a.u.key_struct.key = keyp->serial;
+ 	ad.a.u.key_struct.key_desc = keyp->description;
+ #endif
+-	return smk_access(tkp, keyp->security, MAY_READWRITE, &ad);
++	if (perm & KEY_READ)
++		request = MAY_READ;
++	if (perm & (KEY_WRITE | KEY_LINK | KEY_SETATTR))
++		request = MAY_WRITE;
++	return smk_access(tkp, keyp->security, request, &ad);
+ }
+ #endif /* CONFIG_KEYS */
+ 
+-- 
+2.1.4
+

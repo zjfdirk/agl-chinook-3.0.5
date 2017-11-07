@@ -1,0 +1,167 @@
+From e8624ab00bfa37e9c3f4ffa2f17d47c1455b0025 Mon Sep 17 00:00:00 2001
+From: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+Date: Thu, 23 Feb 2017 12:03:09 +0300
+Subject: [PATCH 09/17] vringh: support ring structure located in i/o space
+
+Add vringh_getdesc_kern_io() and vringh_complete_kern_io() that are
+versions of vringh_getdesc_kern() and vringh_complete_kern() that work
+with ring located in i/o space.
+
+Signed-off-by: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+---
+ drivers/vhost/vringh.c | 75 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ include/linux/vringh.h |  7 +++++
+ 2 files changed, 82 insertions(+)
+
+diff --git a/drivers/vhost/vringh.c b/drivers/vhost/vringh.c
+index 3bb02c6..e488719 100644
+--- a/drivers/vhost/vringh.c
++++ b/drivers/vhost/vringh.c
+@@ -11,6 +11,7 @@
+ #include <linux/uaccess.h>
+ #include <linux/slab.h>
+ #include <linux/export.h>
++#include <linux/io.h>
+ #include <uapi/linux/virtio_config.h>
+ 
+ static __printf(1,2) __cold void vringh_bad(const char *fmt, ...)
+@@ -824,18 +825,38 @@ static inline int getu16_kern(const struct vringh *vrh,
+ 	return 0;
+ }
+ 
++static inline int getu16_kern_io(const struct vringh *vrh,
++				 u16 *val, const __virtio16 *p)
++{
++	*val = vringh16_to_cpu(vrh, ioread16((void __iomem *)p));
++	return 0;
++}
++
+ static inline int putu16_kern(const struct vringh *vrh, __virtio16 *p, u16 val)
+ {
+ 	ACCESS_ONCE(*p) = cpu_to_vringh16(vrh, val);
+ 	return 0;
+ }
+ 
++static inline int putu16_kern_io(const struct vringh *vrh,
++				 __virtio16 *p, u16 val)
++{
++	iowrite16(cpu_to_vringh16(vrh, val), (void __iomem *)p);
++	return 0;
++}
++
+ static inline int copydesc_kern(void *dst, const void *src, size_t len)
+ {
+ 	memcpy(dst, src, len);
+ 	return 0;
+ }
+ 
++static inline int copydesc_kern_io(void *dst, const void *src, size_t len)
++{
++	memcpy_fromio(dst, (void __iomem *)src, len);
++	return 0;
++}
++
+ static inline int putused_kern(struct vring_used_elem *dst,
+ 			       const struct vring_used_elem *src,
+ 			       unsigned int num)
+@@ -844,6 +865,14 @@ static inline int putused_kern(struct vring_used_elem *dst,
+ 	return 0;
+ }
+ 
++static inline int putused_kern_io(struct vring_used_elem *dst,
++				  const struct vring_used_elem *src,
++				  unsigned int num)
++{
++	memcpy_toio((void __iomem *)dst, src, num * sizeof(*dst));
++	return 0;
++}
++
+ static inline int xfer_kern(void *src, void *dst, size_t len)
+ {
+ 	memcpy(dst, src, len);
+@@ -932,6 +961,36 @@ int vringh_getdesc_kern(struct vringh *vrh,
+ EXPORT_SYMBOL(vringh_getdesc_kern);
+ 
+ /**
++ * vringh_getdesc_kern_io - version of vring_getdesc_kern() for case when
++ * descriptors and available ring are in i/o space
++ */
++int vringh_getdesc_kern_io(struct vringh *vrh,
++			   struct vringh_kiov *riov,
++			   struct vringh_kiov *wiov,
++			   u16 *head,
++			   gfp_t gfp)
++{
++	int err;
++
++	err = __vringh_get_head(vrh, getu16_kern_io, &vrh->last_avail_idx);
++	if (err < 0)
++		return err;
++
++	/* Empty... */
++	if (err == vrh->vring.num)
++		return 0;
++
++	*head = err;
++	err = __vringh_iov(vrh, *head, riov, wiov, no_range_check, NULL,
++			   gfp, copydesc_kern_io);
++	if (err)
++		return err;
++
++	return 1;
++}
++EXPORT_SYMBOL(vringh_getdesc_kern_io);
++
++/**
+  * vringh_iov_pull_kern - copy bytes from vring_iov.
+  * @riov: the riov as passed to vringh_getdesc_kern() (updated as we consume)
+  * @dst: the place to copy.
+@@ -997,6 +1056,22 @@ int vringh_complete_kern(struct vringh *vrh, u16 head, u32 len)
+ EXPORT_SYMBOL(vringh_complete_kern);
+ 
+ /**
++ * vringh_complete_kern_io - version of vringh_complete_kern() for case when
++ * used ring is in i/o space
++ */
++int vringh_complete_kern_io(struct vringh *vrh, u16 head, u32 len)
++{
++	struct vring_used_elem used;
++
++	used.id = cpu_to_vringh32(vrh, head);
++	used.len = cpu_to_vringh32(vrh, len);
++
++	return __vringh_complete(vrh, &used, 1,
++				putu16_kern_io, putused_kern_io);
++}
++EXPORT_SYMBOL(vringh_complete_kern_io);
++
++/**
+  * vringh_notify_enable_kern - we want to know if something changes.
+  * @vrh: the vring.
+  *
+diff --git a/include/linux/vringh.h b/include/linux/vringh.h
+index bc6c28d..ed279e4 100644
+--- a/include/linux/vringh.h
++++ b/include/linux/vringh.h
+@@ -208,11 +208,18 @@ int vringh_getdesc_kern(struct vringh *vrh,
+ 			u16 *head,
+ 			gfp_t gfp);
+ 
++int vringh_getdesc_kern_io(struct vringh *vrh,
++			   struct vringh_kiov *riov,
++			   struct vringh_kiov *wiov,
++			   u16 *head,
++			   gfp_t gfp);
++
+ ssize_t vringh_iov_pull_kern(struct vringh_kiov *riov, void *dst, size_t len);
+ ssize_t vringh_iov_push_kern(struct vringh_kiov *wiov,
+ 			     const void *src, size_t len);
+ void vringh_abandon_kern(struct vringh *vrh, unsigned int num);
+ int vringh_complete_kern(struct vringh *vrh, u16 head, u32 len);
++int vringh_complete_kern_io(struct vringh *vrh, u16 head, u32 len);
+ 
+ bool vringh_notify_enable_kern(struct vringh *vrh);
+ void vringh_notify_disable_kern(struct vringh *vrh);
+-- 
+1.9.1
+

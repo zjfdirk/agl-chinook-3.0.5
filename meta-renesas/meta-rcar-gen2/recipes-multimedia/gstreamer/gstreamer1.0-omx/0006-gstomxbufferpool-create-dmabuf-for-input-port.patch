@@ -1,0 +1,46 @@
+From 078a91a917a7b81cfcf523ac23b1c3e154506ef9 Mon Sep 17 00:00:00 2001
+From: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+Date: Thu, 1 Sep 2016 17:43:35 +0300
+Subject: [PATCH 06/10] gstomxbufferpool: create dmabuf for input port
+
+
+Signed-off-by: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+---
+ omx/gstomxbufferpool.c |   14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/omx/gstomxbufferpool.c b/omx/gstomxbufferpool.c
+index 1e0a14c..d86f9d8 100644
+--- a/omx/gstomxbufferpool.c
++++ b/omx/gstomxbufferpool.c
+@@ -518,6 +518,7 @@ gst_omx_buffer_pool_alloc_buffer (GstBufferPool * bpool,
+ 
+     pool->need_copy = FALSE;
+   } else {
++    gboolean dmabuf = FALSE;
+     GstMemory *mem;
+     const guint nstride = pool->port->port_def.format.video.nStride;
+     const guint nslice = pool->port->port_def.format.video.nSliceHeight;
+@@ -552,8 +553,17 @@ gst_omx_buffer_pool_alloc_buffer (GstBufferPool * bpool,
+ 
+     if (GST_IS_OMX_VIDEO_DEC (pool->element) &&
+         GST_OMX_VIDEO_DEC (pool->element)->use_dmabuf == TRUE &&
+-        (omx_buf->omx_buf->pOutputPortPrivate)) {
+-#if defined (HAVE_MMNGRBUF) && defined (HAVE_VIDEODEC_EXT)
++        (omx_buf->omx_buf->pOutputPortPrivate))
++      dmabuf = TRUE;
++
++
++    if (GST_IS_OMX_VIDEO_ENC (pool->element) &&
++        GST_OMX_VIDEO_ENC (pool->element)->no_copy == TRUE &&
++        (omx_buf->omx_buf->pInputPortPrivate))
++      dmabuf = TRUE;
++
++    if (dmabuf) {
++#if defined (HAVE_MMNGRBUF)
+       if (pool->allocator)
+         gst_object_unref (pool->allocator);
+       pool->allocator = gst_dmabuf_allocator_new ();
+-- 
+1.7.10.4
+

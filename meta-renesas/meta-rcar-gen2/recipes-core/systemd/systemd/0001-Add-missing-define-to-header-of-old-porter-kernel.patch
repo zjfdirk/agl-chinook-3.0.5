@@ -1,0 +1,31 @@
+From 2ff62c93fe2b8a0221f199f07060d0bcda46a4b9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jan-Simon=20M=C3=B6ller?= <jsmoeller@linuxfoundation.org>
+Date: Thu, 18 Aug 2016 10:22:27 +0200
+Subject: [PATCH] Add missing define to header of old porter kernel
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Jan-Simon Möller <jsmoeller@linuxfoundation.org>
+---
+ src/basic/missing.h | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/basic/missing.h b/src/basic/missing.h
+index 77be0c8..4fd1595 100644
+--- a/src/basic/missing.h
++++ b/src/basic/missing.h
+@@ -468,6 +468,10 @@ struct btrfs_ioctl_quota_ctl_args {
+                                struct btrfs_ioctl_qgroup_limit_args)
+ #endif
+ 
++#ifndef BTRFS_IOC_QUOTA_RESCAN_WAIT
++#define BTRFS_IOC_QUOTA_RESCAN_WAIT _IO(BTRFS_IOCTL_MAGIC, 46)
++#endif
++
+ #ifndef BTRFS_FIRST_FREE_OBJECTID
+ #define BTRFS_FIRST_FREE_OBJECTID 256
+ #endif
+-- 
+2.1.4
+

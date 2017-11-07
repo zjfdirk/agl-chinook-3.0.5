@@ -1,0 +1,36 @@
+From ea81dc20148025d25305582164e614754880606c Mon Sep 17 00:00:00 2001
+From: Richard Guy Briggs <rgb@redhat.com>
+Date: Thu, 21 Nov 2013 13:57:33 -0500
+Subject: [PATCH 21/54] smack: call WARN_ONCE() instead of calling
+ audit_log_start()
+
+Remove the call to audit_log() (which call audit_log_start()) and deal with
+the errors in the caller, logging only once if the condition is met.  Calling
+audit_log_start() in this location makes buffer allocation and locking more
+complicated in the calling tree (audit_filter_user()).
+
+Signed-off-by: Richard Guy Briggs <rgb@redhat.com>
+Signed-off-by: Eric Paris <eparis@redhat.com>
+---
+ security/smack/smack_lsm.c | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/security/smack/smack_lsm.c b/security/smack/smack_lsm.c
+index d814e35..14f52be 100644
+--- a/security/smack/smack_lsm.c
++++ b/security/smack/smack_lsm.c
+@@ -3616,9 +3616,8 @@ static int smack_audit_rule_match(u32 secid, u32 field, u32 op, void *vrule,
+ 	struct smack_known *skp;
+ 	char *rule = vrule;
+ 
+-	if (!rule) {
+-		audit_log(actx, GFP_ATOMIC, AUDIT_SELINUX_ERR,
+-			  "Smack: missing rule\n");
++	if (unlikely(!rule)) {
++		WARN_ONCE(1, "Smack: missing rule\n");
+ 		return -ENOENT;
+ 	}
+ 
+-- 
+2.1.4
+

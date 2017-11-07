@@ -1,0 +1,153 @@
+Patches in this directory were generated on top of the kernel
+
+ git://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas-backport.git
+
+branch
+
+ bsp/v3.10.31-ltsi/rcar-gen2-1.9.2
+
+This patches are subdivided in 3 sets.
+
+Set 1: from 3.10-rc1 to 3.14
+
+  0001-Smack-Local-IPv6-port-based-controls.patch
+  0002-Smack-Improve-access-check-performance.patch
+  0003-Smack-Add-smkfstransmute-mount-option.patch
+  0004-Smack-Fix-possible-NULL-pointer-dereference-at-smk_n.patch
+  0005-Smack-Fix-the-bug-smackcipso-can-t-set-CIPSO-correct.patch
+  0006-Security-Add-Hook-to-test-if-the-particular-xattr-is.patch
+  0007-xattr-Constify-name-member-of-struct-xattr.patch
+  0008-security-smack-fix-memleak-in-smk_write_rules_list.patch
+  0009-security-smack-add-a-hash-table-to-quicken-smk_find_.patch
+  0010-Smack-network-label-match-fix.patch
+  0011-Smack-IPv6-casting-error-fix-for-3.11.patch
+  0012-Smack-parse-multiple-rules-per-write-to-load2-up-to-.patch
+  0013-Smack-Implement-lock-security-mode.patch
+  0014-Smack-Ptrace-access-check-mode.patch
+  0015-smack-fix-allow-either-entry-be-missing-on-access-ac.patch
+  0016-Smack-Prevent-the-and-labels-from-being-used-in-SMAC.patch
+  0017-Smack-Make-the-syslog-control-configurable.patch
+  0018-Smack-change-rule-cap-check.patch
+  0019-Smack-Rationalize-mount-restrictions.patch
+  0020-Smack-File-receive-audit-correction.patch
+  0021-smack-call-WARN_ONCE-instead-of-calling-audit_log_st.patch
+
+
+Set 2: from 3.14 to 3.19
+ 
+  0022-smack-fix-key-permission-verification.patch
+  0023-Minor-improvement-of-smack_sb_kern_mount.patch
+  0024-Smack-fix-the-subject-object-order-in-smack_ptrace_t.patch
+  0025-Smack-unify-all-ptrace-accesses-in-the-smack.patch
+  0026-Smack-adds-smackfs-ptrace-interface.patch
+  0027-bugfix-patch-for-SMACK.patch
+  0028-SMACK-Fix-handling-value-NULL-in-post-setxattr.patch
+  0029-Smack-Correctly-remove-SMACK64TRANSMUTE-attribute.patch
+  0030-Smack-bidirectional-UDS-connect-check.patch
+  0031-Smack-Verify-read-access-on-file-open-v3.patch
+  0032-Smack-Label-cgroup-files-for-systemd.patch
+  0033-Warning-in-scanf-string-typing.patch
+  0034-Smack-fix-behavior-of-smack_inode_listsecurity.patch
+  0035-Smack-handle-zero-length-security-labels-without-pan.patch
+  0036-Smack-remove-unneeded-NULL-termination-from-securtit.patch
+  0037-Smack-Fix-setting-label-on-successful-file-open.patch
+  0038-Smack-Bring-up-access-mode.patch
+  0039-Small-fixes-in-comments-describing-function-paramete.patch
+  0040-Fix-a-bidirectional-UDS-connect-check-typo.patch
+  0041-Make-Smack-operate-on-smack_known-struct-where-it-st.patch
+  0042-Smack-Lock-mode-for-the-floor-and-hat-labels.patch
+  0043-Security-smack-replace-kzalloc-with-kmem_cache-for-i.patch
+  0044-security-smack-fix-out-of-bounds-access-in-smk_parse.patch
+
+Set 3: from 3.19 to 4.0
+
+  0045-smack-miscellaneous-small-fixes-in-function-comments.patch
+  0046-smack-fix-logic-in-smack_inode_init_security-functio.patch
+  0047-smack-introduce-a-special-case-for-tmpfs-in-smack_d_.patch
+  0048-smack-Fix-a-bidirectional-UDS-connect-check-typo.patch
+  0049-Smack-Rework-file-hooks.patch
+  0050-Smack-secmark-support-for-netfilter.patch
+  0051-smack-Add-missing-logging-in-bidirectional-UDS-conne.patch
+  0052-smack-fix-possible-use-after-frees-in-task_security-.patch
+  0053-Smack-Repair-netfilter-dependency.patch
+  0054-Smack-secmark-connections.patch
+
+Some rewritting occured to avoid to take the commits below that are
+affecting smack codes without being important for smack.
+
+  f589594 KEYS: Move the flags representing required permission to linux/key.h
+  41c3bd2 netlabel: fix a problem when setting bits below the previously lowest bit
+  4b8feff netlabel: fix the horribly broken catmap functions
+  4fbe63d netlabel: shorter names for the NetLabel catmap funcs/structs
+  e0b93ed security: make security_file_set_fowner, f_setown and __f_setown void return
+  a455589 assorted conversions to %p[dD]
+
+Some caution has to be taken about evolution of netlabel that is not
+integrated.
+ 
+Here is the short log of the commit integrated (not the one prefixed
+with sharp).
+
+ c673944 Smack: Local IPv6 port based controls
+ 2f823ff Smack: Improve access check performance
+ e830b39 Smack: Add smkfstransmute mount option
+ 8cd77a0 Smack: Fix possible NULL pointer dereference at smk_netlbl_mls()
+ 0fcfee6 Smack: Fix the bug smackcipso can't set CIPSO correctly
+ 746df9b Security: Add Hook to test if the particular xattr is part of a MAC model.
+ 9548906 xattr: Constify ->name member of "struct xattr".
+ 470043b security: smack: fix memleak in smk_write_rules_list()
+ 4d7cf4a security: smack: add a hash table to quicken smk_find_entry()
+ 677264e Smack: network label match fix
+ 6ea0624 Smack: IPv6 casting error fix for 3.11
+ 10289b0 Smack: parse multiple rules per write to load2, up to PAGE_SIZE-1 bytes
+ c0ab6e5 Smack: Implement lock security mode
+ b5dfd80 Smack: Ptrace access check mode
+ 398ce07 smack: fix: allow either entry be missing on access/access2 check (v2)
+ 19760ad Smack: Prevent the * and @ labels from being used in SMACK64EXEC
+ 00f84f3 Smack: Make the syslog control configurable
+ 4afde48 Smack: change rule cap check
+ 24ea1b6 Smack: Rationalize mount restrictions
+ 4482a44 Smack: File receive audit correction
+ 4eb0f4a smack: call WARN_ONCE() instead of calling audit_log_start()
+ # f589594 KEYS: Move the flags representing required permission to linux/key.h
+ fffea21 smack: fix key permission verifgit checkout ication
+ 55dfc5d Minor improvement of 'smack_sb_kern_mount'
+ 959e6c7 Smack: fix the subject/object order in smack_ptrace_traceme()
+ 5663884 Smack: unify all ptrace accesses in the smack
+ 6686781 Smack: adds smackfs/ptrace interface
+ 5e9ab59 bugfix patch for SMACK
+ 9598f4c SMACK: Fix handling value==NULL in post setxattr
+ f59bdfb Smack: Correctly remove SMACK64TRANSMUTE attribute
+ 54e70ec Smack: bidirectional UDS connect check
+ a6834c0 Smack: Verify read access on file open - v3
+ 36ea735 Smack: Label cgroup files for systemd
+ ec554fa Warning in scanf string typing
+ # 41c3bd2 netlabel: fix a problem when setting bits below the previously lowest bit
+ # 4b8feff netlabel: fix the horribly broken catmap functions
+ # 4fbe63d netlabel: shorter names for the NetLabel catmap funcs/structs
+ fd5c9d2 Smack: fix behavior of smack_inode_listsecurity
+ b862e56 Smack: handle zero-length security labels without panic
+ da1b635 Smack: remove unneeded NULL-termination from securtity label
+ d83d2c2 Smack: Fix setting label on successful file open
+ d166c80 Smack: Bring-up access mode
+ e95ef49 Small fixes in comments describing function parameters
+ d0175790 Fix a bidirectional UDS connect check typo
+ 21c7eae Make Smack operate on smack_known struct where it still used char*
+ # e0b93ed security: make security_file_set_fowner, f_setown and __f_setown void return
+ 6c892df Smack: Lock mode for the floor and hat labels
+ 1a5b472 Security: smack: replace kzalloc with kmem_cache for inode_smack
+ # a455589 assorted conversions to %p[dD]
+ 5c1b662 security: smack: fix out-of-bounds access in smk_parse_smack()
+ 1a28979 smack: miscellaneous small fixes in function comments
+ 68390cc smack: fix logic in smack_inode_init_security function
+ 1d8c232 smack: introduce a special case for tmpfs in smack_d_instantiate()
+ 96be7b5 smack: Fix a bidirectional UDS connect check typo
+ 5e7270a Smack: Rework file hooks
+ 69f287a Smack: secmark support for netfilter
+ 138a868 smack: Add missing logging in bidirectional UDS connect check
+ 6d1cff2 smack: fix possible use after frees in task_security() callers
+ 82b0b2c Smack: Repair netfilter dependency
+ 7f368ad Smack: secmark connections
+ # 8802565 Smack: Use d_is_positive() rather than testing dentry->d_inode
+
+

@@ -1,0 +1,18 @@
+
+[Unit]
+SourcePath=/usr/local/bin/rc.pvr
+Before=weston.service
+
+[Service]
+Type=forking
+Restart=no
+TimeoutSec=5min
+IgnoreSIGPIPE=no
+KillMode=process
+GuessMainPID=no
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/rc.pvr start
+ExecStop=/usr/local/bin/rc.pvr stop
+
+[Install]
+RequiredBy=weston.service

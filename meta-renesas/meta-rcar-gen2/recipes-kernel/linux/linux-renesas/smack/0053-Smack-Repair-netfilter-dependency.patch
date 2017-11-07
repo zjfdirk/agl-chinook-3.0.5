@@ -1,0 +1,39 @@
+From 31bb2085e178585b3c04b46da686429bf916b39c Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Fri, 23 Jan 2015 09:31:01 -0800
+Subject: [PATCH 53/54] Smack: Repair netfilter dependency
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On 1/23/2015 8:20 AM, Jim Davis wrote:
+> Building with the attached random configuration file,
+>
+> security/smack/smack_netfilter.c: In function ‘smack_ipv4_output’:
+> security/smack/smack_netfilter.c:55:6: error: ‘struct sk_buff’ has no
+> member named ‘secmark’
+>    skb->secmark = skp->smk_secid;
+>       ^
+> make[2]: *** [security/smack/smack_netfilter.o] Error 1
+
+The existing Makefile used the wrong configuration option to
+determine if smack_netfilter should be built. This sets it right.
+
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+---
+ security/smack/Makefile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/security/smack/Makefile b/security/smack/Makefile
+index 616cf93..ee2ebd5 100644
+--- a/security/smack/Makefile
++++ b/security/smack/Makefile
+@@ -5,4 +5,4 @@
+ obj-$(CONFIG_SECURITY_SMACK) := smack.o
+ 
+ smack-y := smack_lsm.o smack_access.o smackfs.o
+-smack-$(CONFIG_NETFILTER) += smack_netfilter.o
++smack-$(CONFIG_SECURITY_SMACK_NETFILTER) += smack_netfilter.o
+-- 
+2.1.4
+

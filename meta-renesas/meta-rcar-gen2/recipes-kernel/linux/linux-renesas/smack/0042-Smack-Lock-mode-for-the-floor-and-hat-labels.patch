@@ -1,0 +1,52 @@
+From 8515408b0cb0e819fdb197796a7509f4833fd8dd Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Thu, 9 Oct 2014 16:18:55 -0700
+Subject: [PATCH 42/54] Smack: Lock mode for the floor and hat labels
+
+The lock access mode allows setting a read lock on a file
+for with the process has only read access. The floor label is
+defined to make it easy to have the basic system installed such
+that everyone can read it. Once there's a desire to read lock
+(rationally or otherwise) a floor file a rule needs to get set.
+This happens all the time, so make the floor label a little bit
+more special and allow everyone lock access, too. By implication,
+give processes with the hat label (hat can read everything)
+lock access as well. This reduces clutter in the Smack rule set.
+
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+---
+ security/smack/smack_access.c | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/security/smack/smack_access.c b/security/smack/smack_access.c
+index c6c9245..09077a5 100644
+--- a/security/smack/smack_access.c
++++ b/security/smack/smack_access.c
+@@ -142,8 +142,7 @@ int smk_access(struct smack_known *subject, struct smack_known *object,
+ 	 * Tasks cannot be assigned the internet label.
+ 	 * An internet subject can access any object.
+ 	 */
+-	if (object == &smack_known_web ||
+-	    subject == &smack_known_web)
++	if (object == &smack_known_web || subject == &smack_known_web)
+ 		goto out_audit;
+ 	/*
+ 	 * A star object can be accessed by any subject.
+@@ -157,10 +156,11 @@ int smk_access(struct smack_known *subject, struct smack_known *object,
+ 	if (subject->smk_known == object->smk_known)
+ 		goto out_audit;
+ 	/*
+-	 * A hat subject can read any object.
+-	 * A floor object can be read by any subject.
++	 * A hat subject can read or lock any object.
++	 * A floor object can be read or locked by any subject.
+ 	 */
+-	if ((request & MAY_ANYREAD) == request) {
++	if ((request & MAY_ANYREAD) == request ||
++	    (request & MAY_LOCK) == request) {
+ 		if (object == &smack_known_floor)
+ 			goto out_audit;
+ 		if (subject == &smack_known_hat)
+-- 
+2.1.4
+

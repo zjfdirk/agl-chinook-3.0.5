@@ -1,0 +1,36 @@
+From 99c1ba83e749446ef633197f2f78642171baa30d Mon Sep 17 00:00:00 2001
+From: "Passion,Zhao" <passion.zhao@intel.com>
+Date: Mon, 3 Jun 2013 11:42:24 +0800
+Subject: [PATCH 05/54] Smack: Fix the bug smackcipso can't set CIPSO correctly
+
+Bug report: https://tizendev.org/bugs/browse/TDIS-3891
+
+The reason is userspace libsmack only use "smackfs/cipso2" long-label interface,
+but the code's logical is still for orginal fixed length label. Now update
+smack_cipso_apply() to support flexible label (<=256 including tailing '\0')
+
+There is also a bug in kernel/security/smack/smackfs.c:
+When smk_set_cipso() parsing the CIPSO setting from userspace, the offset of
+CIPSO level should be "strlen(label)+1" instead of "strlen(label)"
+
+Signed-off-by: Passion,Zhao <passion.zhao@intel.com>
+---
+ security/smack/smackfs.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/security/smack/smackfs.c b/security/smack/smackfs.c
+index 3c79cba..ab16703 100644
+--- a/security/smack/smackfs.c
++++ b/security/smack/smackfs.c
+@@ -881,7 +881,7 @@ static ssize_t smk_set_cipso(struct file *file, const char __user *buf,
+ 	if (format == SMK_FIXED24_FMT)
+ 		rule += SMK_LABELLEN;
+ 	else
+-		rule += strlen(skp->smk_known);
++		rule += strlen(skp->smk_known) + 1;
+ 
+ 	ret = sscanf(rule, "%d", &maplevel);
+ 	if (ret != 1 || maplevel > SMACK_CIPSO_MAXLEVEL)
+-- 
+2.1.4
+

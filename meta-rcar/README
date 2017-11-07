@@ -1,0 +1,34 @@
+OpenEmbedded/Yocto BSP layer for Renesas Electronics's SoCs
+==========
+This layer provides support for Renesas Electronics's platforms for use with
+OpenEmbedded and/or Yocto.
+
+Layer maintainers: Takeshi Saito <takeshi.saito.xv@renesas.com>
+
+Supported Boards/Machines
+=========================
+
+In addition, this also provides layer that provides support board that is used
+SoCs that Renesas build. Layer and board that supports following:
+
+    * meta-rcar-gen3
+        - Renesas Electronics Corporation. Salvator-X (R8A7795/R8A7796)
+        - Renesas Electronics Corporation. Salvator-X.View (R8A7795)
+        - Renesas Electronics Corporation. Salvator-X.View (R8A7796)
+        - Renesas Electronics Corporation. H3ULCB (R8A7795)
+        - Renesas Electronics Corporation. H3ULCB.HAD (R8A7795)
+        - Renesas Electronics Corporation. H3ULCB.View (R8A7795)
+        - Renesas Electronics Corporation. M3ULCB (R8A7796)
+        - Renesas Electronics Corporation. M3ULCB.View (R8A7796)
+
+    * meta-rcar-gen2
+        - Renesas Electronics Corporation. Wheat (R8A7792)
+        - Renesas Electronics Corporation. Blanche (R8A7792)
+
+Please see README in the layer directory about the description of the board.
+
+Original BSP image
+=========================
+The meta-renesas layer provides original BSP image. The following 
+    * core-image-x11
+    * core-image-weston

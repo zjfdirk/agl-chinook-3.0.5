@@ -1,0 +1,33 @@
+From 1f0c74cb16056d4338188f5de4a9bcf1e1fc79a0 Mon Sep 17 00:00:00 2001
+From: Harunobu Kurokawa <harunobu.kurokawa.dn@renesas.com>
+Date: Tue, 17 Jan 2017 19:48:01 +0300
+Subject: [PATCH] Fix GST error complainings
+
+GStreamer- CRITICAL **: gst_segment_to_running_time: assertion 'segment->format == format' failed
+
+Signed-off-by: Grigory Kletsko <grigory.kletsko@cogentembedded.com>
+Signed-off-by: Harunobu Kurokawa <harunobu.kurokawa.dn@renesas.com>
+---
+ src/gst-recorder.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/gst-recorder.c b/src/gst-recorder.c
+index c84d410..91ba0c7 100644
+--- a/src/gst-recorder.c
++++ b/src/gst-recorder.c
+@@ -1021,6 +1021,12 @@ gst_recorder_create(struct gst_recorder_settings *settings)
+ 					"framerate", GST_TYPE_FRACTION, 0, DEFAULT_FPS,
+ 					NULL), NULL);
+ 
++	g_object_set (G_OBJECT (r->appsrc),
++		      "stream-type", 0, /* GST_APP_STREAM_TYPE_STREAM */
++		      "format", GST_FORMAT_TIME,
++		      "is-live", TRUE,
++		      NULL);
++
+ 	r->appsrc_pad = gst_element_get_static_pad(GST_ELEMENT_CAST(r->appsrc), "src");
+ 	if (!r->appsrc_pad)
+ 		weston_log("Failed to get src0 pad of appsrc\n");
+-- 
+2.9.2
+

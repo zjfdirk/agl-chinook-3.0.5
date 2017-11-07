@@ -1,0 +1,13 @@
+[Unit]
+Description=Weston reference Wayland compositor
+Conflicts=getty@tty1.service
+After=dbus.service rc.pvr.service
+
+[Service]
+ExecStartPre=/bin/rm -rf /home/root/.cache/gstreamer-1.0
+ExecStart=/usr/bin/weston-launch -u root -- --idle-time=4294967 --gst-record
+ExecStop=/usr/bin/killall -s KILL weston
+Type=simple
+
+[Install]
+WantedBy=multi-user.target

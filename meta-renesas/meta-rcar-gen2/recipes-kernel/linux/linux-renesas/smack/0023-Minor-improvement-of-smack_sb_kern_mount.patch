@@ -1,0 +1,37 @@
+From c10dea6e10fc8607744d5b21b7ef7191d4b1a066 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jos=C3=A9=20Bollo?= <jose.bollo@open.eurogiciel.org>
+Date: Wed, 8 Jan 2014 15:53:05 +0100
+Subject: [PATCH 23/54] Minor improvement of 'smack_sb_kern_mount'
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Fix a possible memory access fault when transmute is true and isp is NULL.
+
+Signed-off-by: José Bollo <jose.bollo@open.eurogiciel.org>
+---
+ security/smack/smack_lsm.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/security/smack/smack_lsm.c b/security/smack/smack_lsm.c
+index 16dcf7f..b093463 100644
+--- a/security/smack/smack_lsm.c
++++ b/security/smack/smack_lsm.c
+@@ -413,9 +413,11 @@ static int smack_sb_kern_mount(struct super_block *sb, int flags, void *data)
+ 	 * Initialize the root inode.
+ 	 */
+ 	isp = inode->i_security;
+-	if (inode->i_security == NULL) {
+-		inode->i_security = new_inode_smack(sp->smk_root);
+-		isp = inode->i_security;
++	if (isp == NULL) {
++		isp = new_inode_smack(sp->smk_root);
++		if (isp == NULL)
++			return -ENOMEM;
++		inode->i_security = isp;
+ 	} else
+ 		isp->smk_inode = sp->smk_root;
+ 
+-- 
+2.1.4
+

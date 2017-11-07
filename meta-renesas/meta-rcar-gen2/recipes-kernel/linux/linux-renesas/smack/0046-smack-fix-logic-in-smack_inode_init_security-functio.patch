@@ -1,0 +1,43 @@
+From b9fb9ef37ee4c2d9c30564afa8bfbb1bc3d58124 Mon Sep 17 00:00:00 2001
+From: Lukasz Pawelczyk <l.pawelczyk@samsung.com>
+Date: Wed, 26 Nov 2014 15:31:07 +0100
+Subject: [PATCH 46/54] smack: fix logic in smack_inode_init_security function
+
+In principle if this function was called with "value" == NULL and "len"
+not NULL it could return different results for the "len" compared to a
+case where "name" was not NULL. This is a hypothetical case that does
+not exist in the kernel, but it's a logic bug nonetheless.
+
+Signed-off-by: Lukasz Pawelczyk <l.pawelczyk@samsung.com>
+---
+ security/smack/smack_lsm.c | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/security/smack/smack_lsm.c b/security/smack/smack_lsm.c
+index eacd7fc..2ec6cdb 100644
+--- a/security/smack/smack_lsm.c
++++ b/security/smack/smack_lsm.c
+@@ -800,7 +800,7 @@ static int smack_inode_init_security(struct inode *inode, struct inode *dir,
+ 	if (name)
+ 		*name = XATTR_SMACK_SUFFIX;
+ 
+-	if (value) {
++	if (value && len) {
+ 		rcu_read_lock();
+ 		may = smk_access_entry(skp->smk_known, dsp->smk_known,
+ 				       &skp->smk_rules);
+@@ -821,10 +821,9 @@ static int smack_inode_init_security(struct inode *inode, struct inode *dir,
+ 		*value = kstrdup(isp->smk_known, GFP_NOFS);
+ 		if (*value == NULL)
+ 			return -ENOMEM;
+-	}
+ 
+-	if (len)
+ 		*len = strlen(isp->smk_known);
++	}
+ 
+ 	return 0;
+ }
+-- 
+2.1.4
+

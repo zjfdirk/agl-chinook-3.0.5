@@ -1,0 +1,31 @@
+From 7c99b043770ddb2c258531163b631ff3256757e4 Mon Sep 17 00:00:00 2001
+From: Rafal Krypa <r.krypa@samsung.com>
+Date: Thu, 8 Jan 2015 18:52:45 +0100
+Subject: [PATCH 51/54] smack: Add missing logging in bidirectional UDS connect
+ check
+
+During UDS connection check, both sides are checked for write access to
+the other side. But only the first check is performed with audit support.
+The second one didn't produce any audit logs. This simple patch fixes that.
+
+Signed-off-by: Rafal Krypa <r.krypa@samsung.com>
+---
+ security/smack/smack_lsm.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/security/smack/smack_lsm.c b/security/smack/smack_lsm.c
+index ae3e1b6..12eb355 100644
+--- a/security/smack/smack_lsm.c
++++ b/security/smack/smack_lsm.c
+@@ -3334,7 +3334,7 @@ static int smack_unix_stream_connect(struct sock *sock,
+ 		if (rc == 0) {
+ 			okp = osp->smk_out;
+ 			skp = ssp->smk_in;
+-			rc = smk_access(okp, skp, MAY_WRITE, NULL);
++			rc = smk_access(okp, skp, MAY_WRITE, &ad);
+ 			rc = smk_bu_note("UDS connect", okp, skp,
+ 						MAY_WRITE, rc);
+ 		}
+-- 
+2.1.4
+

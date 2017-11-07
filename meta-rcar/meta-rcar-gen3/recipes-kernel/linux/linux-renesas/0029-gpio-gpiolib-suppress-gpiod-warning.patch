@@ -1,0 +1,29 @@
+From d5f7b238ab2b458876a50521f9c92487f4ba3226 Mon Sep 17 00:00:00 2001
+From: Vladimir Barinov <vladimir.barinov@cogentembedded.com>
+Date: Thu, 13 Apr 2017 12:18:18 +0300
+Subject: [PATCH] gpio: gpiolib: suppress gpiod warning
+
+Suppress warning about use gpiod instead gpio deprecated callbacks
+
+Signed-off-by: Vladimir Barinov <vladimir.barinov@cogentembedded.com>
+---
+ drivers/gpio/gpiolib.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/drivers/gpio/gpiolib.c b/drivers/gpio/gpiolib.c
+index d407f904..06201ff 100644
+--- a/drivers/gpio/gpiolib.c
++++ b/drivers/gpio/gpiolib.c
+@@ -1945,7 +1945,9 @@ void gpiod_set_raw_value(struct gpio_desc *desc, int value)
+ {
+ 	VALIDATE_DESC_VOID(desc);
+ 	/* Should be using gpiod_set_value_cansleep() */
++#if 0
+ 	WARN_ON(desc->gdev->chip->can_sleep);
++#endif
+ 	_gpiod_set_raw_value(desc, value);
+ }
+ EXPORT_SYMBOL_GPL(gpiod_set_raw_value);
+-- 
+1.9.1
+

@@ -1,0 +1,14 @@
+meta-rcar-gen2/recipes-graphics/gles-module/gles-user-module/r8a7791_linux_sgx_binaries_gles2.tar.bz2
+meta-rcar-gen2/recipes-kernel/fdpm-module/files/fdpm-kernel.tar.bz2
+meta-rcar-gen2/recipes-kernel/gles-module/gles-kernel-module/SGX_KM_M2.tar.bz2
+meta-rcar-gen2/recipes-kernel/mmngr-module/files/mmngr.tar.bz2
+meta-rcar-gen2/recipes-kernel/mmngr-module/files/mmngrbuf.tar.bz2
+meta-rcar-gen2/recipes-kernel/s3ctl-module/files/s3ctl-kernel.tar.bz2
+meta-rcar-gen2/recipes-kernel/uvcs-module/files/uvcs-kernel.tar.bz2
+meta-rcar-gen2/recipes-kernel/vspm-module/files/vspm-kernel.tar.bz2
+meta-rcar-gen2/recipes-multimedia/fdpm-module/files/fdpm.tar.bz2
+meta-rcar-gen2/recipes-multimedia/mmngr-module/files/mmngr.tar.bz2
+meta-rcar-gen2/recipes-multimedia/mmngr-module/files/mmngrbuf.tar.bz2
+meta-rcar-gen2/recipes-multimedia/omx-module/files/RTM0AC*.tar.bz2
+meta-rcar-gen2/recipes-multimedia/s3ctl-module/files/s3ctl.tar.bz2
+meta-rcar-gen2/recipes-multimedia/vspm-module/files/vspm-user.tar.bz2

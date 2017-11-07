@@ -1,0 +1,76 @@
+From 94f8a15030531c7de601d548e848a4dc8f7895bd Mon Sep 17 00:00:00 2001
+From: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+Date: Thu, 2 Mar 2017 17:06:34 +0300
+Subject: [PATCH 16/17] mic: mpssd: support VOP on non-MIC
+
+This adds possibility to build mpssd with -DFAKE, which results into
+daemon managing VOP virtio_net device without attempts to find MIC
+adapters.
+
+For use with non-MIC VOP implementations.
+
+Signed-off-by: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+---
+ Documentation/mic/mpssd/mpssd.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/Documentation/mic/mpssd/mpssd.c b/Documentation/mic/mpssd/mpssd.c
+index f0273e3..5966da9 100644
+--- a/Documentation/mic/mpssd/mpssd.c
++++ b/Documentation/mic/mpssd/mpssd.c
+@@ -18,6 +18,8 @@
+  * Intel MIC User Space Tools.
+  */
+ 
++/* #define FAKE */
++
+ #define _GNU_SOURCE
+ 
+ #include <stdlib.h>
+@@ -1741,11 +1743,20 @@ start_daemon(void)
+ 	int err;
+ 
+ 	for (mic = mic_list.next; mic; mic = mic->next) {
++#ifdef FAKE
++		add_virtio_device(mic, &virtnet_dev_page.dd);
++		err = pthread_create(&mic->mic_net.net_thread, NULL,
++			virtio_net, mic);
++		if (err)
++			mpsslog("%s virtnet pthread_create failed %s\n",
++				mic->name, strerror(err));
++#else
+ 		set_mic_boot_params(mic);
+ 		err = pthread_create(&mic->init_thread, NULL, init_mic, mic);
+ 		if (err)
+ 			mpsslog("%s init_mic pthread_create failed %s\n",
+ 				mic->name, strerror(err));
++#endif
+ 	}
+ 
+ 	while (1)
+@@ -1760,6 +1771,14 @@ init_mic_list(void)
+ 	DIR *dp;
+ 	int cnt = 0;
+ 
++#ifdef FAKE
++	mic->next = calloc(1, sizeof(struct mic_info));
++	if (mic->next) {
++		mic = mic->next;
++		mic->name = strdup("Fake MIC");
++		cnt++;
++	}
++#else
+ 	dp = opendir(MICSYSFSDIR);
+ 	if (!dp)
+ 		return 0;
+@@ -1781,6 +1800,7 @@ init_mic_list(void)
+ 	}
+ 
+ 	closedir(dp);
++#endif
+ 	return cnt;
+ }
+ 
+-- 
+1.9.1
+

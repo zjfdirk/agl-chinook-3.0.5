@@ -1,0 +1,34 @@
+From 2ebbeeef2354d2d49c03efba11b1a41074db94c0 Mon Sep 17 00:00:00 2001
+From: Takuya Sakata <takuya.sakata.wz@bp.renesas.com>
+Date: Fri, 5 Aug 2016 09:28:29 +0900
+Subject: [PATCH] add optee_client R-Car support
+
+---
+ tee-supplicant/src/tee_supplicant.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/tee-supplicant/src/tee_supplicant.c b/tee-supplicant/src/tee_supplicant.c
+index 23b2511..ba41341 100644
+--- a/tee-supplicant/src/tee_supplicant.c
++++ b/tee-supplicant/src/tee_supplicant.c
+@@ -49,6 +49,8 @@
+ #include <pthread.h>
+ #include <rpmb.h>
+ 
++#define VERSION_OF_RENESAS	"1.0.5"
++
+ #define TEE_RPC_BUFFER_NUMBER 5
+ 
+ /* Flags of the shared memory. Also defined in tee_service.h in the kernel. */
+@@ -479,6 +481,8 @@ int main(int argc, char *argv[])
+ 	sprintf(devname1, "optee_armtz");
+ 	sprintf(devname2, "teetz");
+ 
++	fprintf(stdout, "tee-supplicant (R-Car Rev.%s)\n", VERSION_OF_RENESAS);
++
+ 	while (--argc) {
+ 		n++;
+ 		if (strncmp(argv[n], "opteearmtz00", 12) == 0) {
+-- 
+1.9.1
+

@@ -1,0 +1,75 @@
+From c4e86a58041cd4408d283444dcba6f532a80697c Mon Sep 17 00:00:00 2001
+From: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+Date: Thu, 1 Sep 2016 17:33:44 +0300
+Subject: [PATCH 05/10] gssomxbufferpool: add exported flag
+
+This flag indicates that buffer are used outside of OMX component
+
+Signed-off-by: Andrey Gusakov <andrey.gusakov@cogentembedded.com>
+---
+ omx/gstomx.c           |    1 +
+ omx/gstomx.h           |    5 +++++
+ omx/gstomxbufferpool.c |    5 ++++-
+ 3 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/omx/gstomx.c b/omx/gstomx.c
+index c018e72..5a916dc 100644
+--- a/omx/gstomx.c
++++ b/omx/gstomx.c
+@@ -1663,6 +1663,7 @@ gst_omx_port_allocate_buffers_unlocked (GstOMXPort * port,
+     buf = g_slice_new0 (GstOMXBuffer);
+     buf->port = port;
+     buf->used = FALSE;
++    buf->exported = FALSE;
+     buf->settings_cookie = port->settings_cookie;
+     g_ptr_array_add (port->buffers, buf);
+ 
+diff --git a/omx/gstomx.h b/omx/gstomx.h
+index 84980f3..27cb2a9 100644
+--- a/omx/gstomx.h
++++ b/omx/gstomx.h
+@@ -279,6 +279,11 @@ struct _GstOMXBuffer {
+    */
+   gboolean used;
+ 
++  /* TRUE if the buffer exported outside the component,
++   * i.e. someone acquired this buffer
++   */
++  gboolean exported;
++
+   /* Cookie of the settings when this buffer was allocated */
+   gint settings_cookie;
+ 
+diff --git a/omx/gstomxbufferpool.c b/omx/gstomxbufferpool.c
+index b9fa769..1e0a14c 100644
+--- a/omx/gstomxbufferpool.c
++++ b/omx/gstomxbufferpool.c
+@@ -695,7 +695,7 @@ gst_omx_buffer_pool_acquire_buffer (GstBufferPool * bpool,
+           pool->enc_buffer_index = 0;
+ 
+         count += 1;
+-      } while (omx_buf->used == TRUE &&
++      } while (omx_buf->exported == TRUE &&
+           count < pool->port->port_def.nBufferCountActual * 3);
+ 
+       if (count == pool->port->port_def.nBufferCountActual * 3) {
+@@ -703,6 +703,7 @@ gst_omx_buffer_pool_acquire_buffer (GstBufferPool * bpool,
+         GST_ERROR_OBJECT (pool,
+             "Can not acquire buffer after 3 times searching");
+       } else {
++        omx_buf->exported = TRUE;
+         *buffer = buf;
+         ret = GST_FLOW_OK;
+       }
+@@ -731,6 +732,8 @@ gst_omx_buffer_pool_release_buffer (GstBufferPool * bpool, GstBuffer * buffer)
+     omx_buf =
+         gst_mini_object_get_qdata (GST_MINI_OBJECT_CAST (buffer),
+         gst_omx_buffer_data_quark);
++    if (GST_IS_OMX_VIDEO_ENC (pool->element))
++      omx_buf->exported = FALSE;
+     if (pool->port->port_def.eDir == OMX_DirOutput && !omx_buf->used) {
+       /* Release back to the port, can be filled again */
+       err = gst_omx_port_release_buffer (pool->port, omx_buf);
+-- 
+1.7.10.4
+

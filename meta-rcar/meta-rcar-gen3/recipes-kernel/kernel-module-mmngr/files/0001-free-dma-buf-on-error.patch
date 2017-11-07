@@ -1,0 +1,23 @@
+From 9362c86c52dcd1577e07f01604e1a7b363c504ca Mon Sep 17 00:00:00 2001
+From: Roman Meshkevich <roman.meshkevich@cogentembedded.com>
+Date: Wed, 22 Feb 2017 01:27:51 +0300
+Subject: [PATCH] unref dma_fb descriptor
+
+---
+ mmngr_drv/mmngrbuf/mmngrbuf-module/files/mmngrbuf/drv/mmngr_buf_drv.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/mmngr_drv/mmngrbuf/mmngrbuf-module/files/mmngrbuf/drv/mmngr_buf_drv.c b/mmngr_drv/mmngrbuf/mmngrbuf-module/files/mmngrbuf/drv/mmngr_buf_drv.c
+index 2e260cb..6a4d0a6 100644
+--- a/mmngr_drv/mmngrbuf/mmngrbuf-module/files/mmngrbuf/drv/mmngr_buf_drv.c
++++ b/mmngr_drv/mmngrbuf/mmngrbuf-module/files/mmngrbuf/drv/mmngr_buf_drv.c
+@@ -99,6 +99,7 @@ static int close(struct inode *inode, struct file *file)
+ 	if (priv->attach) {
+ 		pr_err("detach@close\n");
+ 		dma_buf_detach(priv->dma_buf, priv->attach);
++		dma_buf_put(priv->dma_buf);
+ 	}
+ 
+ 	kfree(priv);
+-- 
+2.7.4

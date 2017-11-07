@@ -1,0 +1,18 @@
+bootkaddr=0x40007fc0
+bootiaddr=0x50000000
+
+bootargs_console=console=ttySC6,38400 ignore_loglevel
+bootargs_video=vmalloc=384M video=HDMI-A-1:1024x768-32@60
+bootargs_extra=rw rootfstype=ext4 rootwait rootdelay=2
+
+bootargs_root=ostree_root=/dev/mmcblk0p2 root=/dev/ram0 ramdisk_size=16384
+
+bootmmc=1:2
+
+booteload_sd=ext4load mmc ${bootmmc} ${bootkaddr} boot/loader/uEnv.txt; env import -t ${bootkaddr} ${filesize}
+
+bootkload_sd=ext4load mmc ${bootmmc} ${bootkaddr} boot/${kernel_image}
+bootiload_sd=ext4load mmc ${bootmmc} ${bootiaddr} boot/${ramdisk_image}
+
+bootcmd=run booteload_sd; setenv bootargs ${bootargs} ${bootargs_console} ${bootargs_video} ${bootargs_root} ${bootargs_extra}; run bootkload_sd; run bootiload_sd; bootm ${bootkaddr} ${bootiaddr}
+

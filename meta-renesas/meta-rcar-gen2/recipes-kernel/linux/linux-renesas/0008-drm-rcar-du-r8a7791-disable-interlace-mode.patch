@@ -1,0 +1,26 @@
+From 9fba622435c36541df97c60b2d7ade25039508de Mon Sep 17 00:00:00 2001
+From: Yannick GICQUEL <yannick.gicquel@iot.bzh>
+Date: Tue, 29 Sep 2015 09:02:55 +0200
+Subject: [PATCH] drm: rcar-du: r8a7791: disable interlace mode
+
+Signed-off-by: Yannick GICQUEL <yannick.gicquel@iot.bzh>
+---
+ drivers/gpu/drm/rcar-du/rcar_du_drv.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/rcar-du/rcar_du_drv.c b/drivers/gpu/drm/rcar-du/rcar_du_drv.c
+index c6b9292..5512c7a 100644
+--- a/drivers/gpu/drm/rcar-du/rcar_du_drv.c
++++ b/drivers/gpu/drm/rcar-du/rcar_du_drv.c
+@@ -443,7 +443,7 @@ static const struct rcar_du_device_info rcar_du_r8a7791_info = {
+ 	.drgbs_bit = 1,
+ 	.max_xres = 1920,
+ 	.max_yres = 1080,
+-	.interlace = true,
++	.interlace = false,
+ 	.lvds0_crtc = BIT(0),
+ 	.lvds1_crtc = 0,
+ 	.vspd_crtc = BIT(0) | BIT(1),
+-- 
+1.9.1
+

@@ -1,0 +1,11 @@
+[Unit]
+Description=Lightmediascanner (LMS)
+
+[Service]
+Type=dbus
+BusName=org.lightmediascanner
+ExecStart=/usr/bin/lightmediascannerd --startup-scan --directory=/usr/share/media
+
+[Install]
+WantedBy=default.target
+Alias=dbus-org.lightmediascanner.service

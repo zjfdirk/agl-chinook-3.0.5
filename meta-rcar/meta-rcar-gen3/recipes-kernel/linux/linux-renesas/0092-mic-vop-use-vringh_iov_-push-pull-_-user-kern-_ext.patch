@@ -1,0 +1,201 @@
+From 827518733d811fda6813733fc62a9ee1dc66b4cb Mon Sep 17 00:00:00 2001
+From: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+Date: Thu, 23 Feb 2017 13:53:29 +0300
+Subject: [PATCH 12/17] mic: vop: use vringh_iov_{push,pull}_{user,kern}_ext()
+
+Use code from vringh instead of duplicating it.
+
+Signed-off-by: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+---
+ drivers/misc/mic/vop/vop_vringh.c | 108 +++++++++++---------------------------
+ 1 file changed, 30 insertions(+), 78 deletions(-)
+
+diff --git a/drivers/misc/mic/vop/vop_vringh.c b/drivers/misc/mic/vop/vop_vringh.c
+index 5dbfb8b..f3ae369 100644
+--- a/drivers/misc/mic/vop/vop_vringh.c
++++ b/drivers/misc/mic/vop/vop_vringh.c
+@@ -510,13 +510,15 @@ error:
+  * addresses and transfer length must follow the alignment requirements of
+  * the MIC DMA engine.
+  */
+-static int vop_virtio_copy_to_user(struct vop_vdev *vdev, void __user *ubuf,
+-				   size_t len, u64 daddr, size_t dlen,
+-				   int vr_idx)
++static int vop_virtio_copy_to_user(void *src, void *dst, size_t len,
++				   void *context)
+ {
++	struct vop_vringh *vvr = context;
++	struct vop_vdev *vdev = vvr->vdev;
++	void __user *ubuf = (void __user *)dst;
++	u64 daddr = (u64) src;
+ 	struct vop_device *vpdev = vdev->vpdev;
+ 	void __iomem *dbuf = vpdev->hw_ops->map(vpdev, daddr, len);
+-	struct vop_vringh *vvr = &vdev->vvr[vr_idx];
+ 	struct vop_info *vi = dev_get_drvdata(&vpdev->dev);
+ 	size_t dma_alignment = 1 << vi->dma_ch->device->copy_align;
+ 	bool x200 = is_dma_copy_aligned(vi->dma_ch->device, 1, 1, 1);
+@@ -575,7 +577,7 @@ err:
+ 	vpdev->hw_ops->unmap(vpdev, dbuf);
+ 	dev_dbg(vop_dev(vdev),
+ 		"%s: ubuf %p dbuf %p len 0x%lx vr_idx 0x%x\n",
+-		__func__, ubuf, dbuf, len, vr_idx);
++		__func__, ubuf, dbuf, len, (int)(vvr - vdev->vvr));
+ 	return err;
+ }
+ 
+@@ -585,13 +587,15 @@ err:
+  * and transfer length must follow the alignment requirements of the MIC
+  * DMA engine.
+  */
+-static int vop_virtio_copy_from_user(struct vop_vdev *vdev, void __user *ubuf,
+-				     size_t len, u64 daddr, size_t dlen,
+-				     int vr_idx)
++static int vop_virtio_copy_from_user(void *src, void *dst, size_t len,
++				     void *context)
+ {
++	struct vop_vringh *vvr = context;
++	struct vop_vdev *vdev = vvr->vdev;
++	void __user *ubuf = (void __user *)dst;
++	u64 daddr = (u64) src;
+ 	struct vop_device *vpdev = vdev->vpdev;
+ 	void __iomem *dbuf = vpdev->hw_ops->map(vpdev, daddr, len);
+-	struct vop_vringh *vvr = &vdev->vvr[vr_idx];
+ 	struct vop_info *vi = dev_get_drvdata(&vdev->vpdev->dev);
+ 	size_t dma_alignment = 1 << vi->dma_ch->device->copy_align;
+ 	bool x200 = is_dma_copy_aligned(vi->dma_ch->device, 1, 1, 1);
+@@ -602,7 +606,7 @@ static int vop_virtio_copy_from_user(struct vop_vdev *vdev, void __user *ubuf,
+ 	if (daddr & (dma_alignment - 1)) {
+ 		vdev->tx_dst_unaligned += len;
+ 		dma = false;
+-	} else if (ALIGN(len, dma_alignment) > dlen) {
++	} else if (len & (dma_alignment - 1)) {
+ 		vdev->tx_len_unaligned += len;
+ 		dma = false;
+ 	}
+@@ -658,12 +662,10 @@ err:
+ 	vpdev->hw_ops->unmap(vpdev, dbuf);
+ 	dev_dbg(vop_dev(vdev),
+ 		"%s: ubuf %p dbuf %p len 0x%lx vr_idx 0x%x\n",
+-		__func__, ubuf, dbuf, len, vr_idx);
++		__func__, ubuf, dbuf, len, (int)(vvr - vdev->vvr));
+ 	return err;
+ }
+ 
+-#define MIC_VRINGH_READ true
+-
+ /* Determine the total number of bytes consumed in a VRINGH KIOV */
+ static inline u32 vop_vringh_iov_consumed(struct vringh_kiov *iov)
+ {
+@@ -676,58 +678,6 @@ static inline u32 vop_vringh_iov_consumed(struct vringh_kiov *iov)
+ }
+ 
+ /*
+- * Traverse the VRINGH KIOV and issue the APIs to trigger the copies.
+- * This API is heavily based on the vringh_iov_xfer(..) implementation
+- * in vringh.c. The reason we cannot reuse vringh_iov_pull_kern(..)
+- * and vringh_iov_push_kern(..) directly is because there is no
+- * way to override the VRINGH xfer(..) routines as of v3.10.
+- */
+-static int vop_vringh_copy(struct vop_vdev *vdev, struct vringh_kiov *iov,
+-			   void __user *ubuf, size_t len, bool read, int vr_idx,
+-			   size_t *out_len)
+-{
+-	int ret = 0;
+-	size_t partlen, tot_len = 0;
+-
+-	while (len && iov->i < iov->used) {
+-		struct kvec *kiov = &iov->iov[iov->i];
+-
+-		partlen = min(kiov->iov_len, len);
+-		if (read)
+-			ret = vop_virtio_copy_to_user(vdev, ubuf, partlen,
+-						      (u64)kiov->iov_base,
+-						      kiov->iov_len,
+-						      vr_idx);
+-		else
+-			ret = vop_virtio_copy_from_user(vdev, ubuf, partlen,
+-							(u64)kiov->iov_base,
+-							kiov->iov_len,
+-							vr_idx);
+-		if (ret) {
+-			dev_err(vop_dev(vdev), "%s %d err %d\n",
+-				__func__, __LINE__, ret);
+-			break;
+-		}
+-		len -= partlen;
+-		ubuf += partlen;
+-		tot_len += partlen;
+-		iov->consumed += partlen;
+-		kiov->iov_len -= partlen;
+-		kiov->iov_base += partlen;
+-		if (!kiov->iov_len) {
+-			/* Fix up old iov element then increment. */
+-			kiov->iov_len = iov->consumed;
+-			kiov->iov_base -= iov->consumed;
+-
+-			iov->consumed = 0;
+-			iov->i++;
+-		}
+-	}
+-	*out_len = tot_len;
+-	return ret;
+-}
+-
+-/*
+  * Use the standard VRINGH infrastructure in the kernel to fetch new
+  * descriptors, initiate the copies and update the used ring.
+  */
+@@ -744,7 +694,7 @@ static int _vop_virtio_copy(struct vop_vdev *vdev, struct mic_copy_desc *copy)
+ 	struct vringh *vrh = &vvr->vrh;
+ 	u16 *head = &vvr->head;
+ 	struct mic_vring *vr = &vvr->vring;
+-	size_t len = 0, out_len;
++	size_t len = 0, copied;
+ 
+ 	copy->out_len = 0;
+ 	/* Fetch a new IOVEC if all previous elements have been processed */
+@@ -769,27 +719,29 @@ static int _vop_virtio_copy(struct vop_vdev *vdev, struct mic_copy_desc *copy)
+ 			ubuf = iov.iov_base;
+ 		}
+ 		/* Issue all the read descriptors first */
+-		ret = vop_vringh_copy(vdev, riov, ubuf, len,
+-				      MIC_VRINGH_READ, copy->vr_idx, &out_len);
+-		if (ret) {
++		copied = vringh_iov_pull_kern_ext(riov, (void *)ubuf, len,
++				vop_virtio_copy_to_user, vvr);
++		if (copied < 0) {
+ 			dev_err(vop_dev(vdev), "%s %d err %d\n",
+ 				__func__, __LINE__, ret);
++			ret = copied;
+ 			break;
+ 		}
+-		len -= out_len;
+-		ubuf += out_len;
+-		copy->out_len += out_len;
++		len -= copied;
++		ubuf += copied;
++		copy->out_len += copied;
+ 		/* Issue the write descriptors next */
+-		ret = vop_vringh_copy(vdev, wiov, ubuf, len,
+-				      !MIC_VRINGH_READ, copy->vr_idx, &out_len);
+-		if (ret) {
++		copied = vringh_iov_push_kern_ext(wiov, (void *)ubuf, len,
++				vop_virtio_copy_from_user, vvr);
++		if (copied < 0) {
+ 			dev_err(vop_dev(vdev), "%s %d err %d\n",
+ 				__func__, __LINE__, ret);
++			ret = copied;
+ 			break;
+ 		}
+-		len -= out_len;
+-		ubuf += out_len;
+-		copy->out_len += out_len;
++		len -= copied;
++		ubuf += copied;
++		copy->out_len += copied;
+ 		if (!len) {
+ 			/* One user space iovec is now completed */
+ 			iovcnt--;
+-- 
+1.9.1
+

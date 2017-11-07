@@ -1,0 +1,32 @@
+From 91bd808e9e5b10a9116cec72b393621bd40e772e Mon Sep 17 00:00:00 2001
+From: Lukasz Pawelczyk <l.pawelczyk@samsung.com>
+Date: Fri, 29 Aug 2014 17:02:54 +0200
+Subject: [PATCH 40/54] Fix a bidirectional UDS connect check typo
+
+The 54e70ec5eb090193b03e69d551fa6771a5a217c4 commit introduced a
+bidirectional check that should have checked for mutual WRITE access
+between two labels. Due to a typo the second check was incorrect.
+
+Signed-off-by: Lukasz Pawelczyk <l.pawelczyk@samsung.com>
+---
+ security/smack/smack_lsm.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/security/smack/smack_lsm.c b/security/smack/smack_lsm.c
+index a510828..1c98a28 100644
+--- a/security/smack/smack_lsm.c
++++ b/security/smack/smack_lsm.c
+@@ -3302,8 +3302,8 @@ static int smack_unix_stream_connect(struct sock *sock,
+ 		rc = smk_bu_note("UDS connect", skp, okp->smk_known,
+ 					MAY_WRITE, rc);
+ 		if (rc == 0) {
+-			rc = smk_access(okp, okp->smk_known, MAY_WRITE, NULL);
+-			rc = smk_bu_note("UDS connect", okp, okp->smk_known,
++			rc = smk_access(okp, skp->smk_known, MAY_WRITE, NULL);
++			rc = smk_bu_note("UDS connect", okp, skp->smk_known,
+ 						MAY_WRITE, rc);
+ 		}
+ 	}
+-- 
+2.1.4
+

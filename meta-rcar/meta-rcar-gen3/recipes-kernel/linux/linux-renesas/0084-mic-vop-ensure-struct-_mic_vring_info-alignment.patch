@@ -1,0 +1,170 @@
+From 2f042fd27e9684db8f04d25e51c6852d47a28213 Mon Sep 17 00:00:00 2001
+From: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+Date: Wed, 22 Feb 2017 16:58:02 +0300
+Subject: [PATCH 04/17] mic: vop: ensure struct _mic_vring_info alignment
+
+This is preparation for use of VOP in non-MIC environment.
+
+In non-x86 environments with struct data alignment requirements, placing
+struct _mic_vring_info directly after vring structures does not work
+because those structures contain odd number of 16-bit words.
+
+This change affects userspace ABI.
+
+Signed-off-by: Nikita Yushchenko <nikita.yoush@cogentembedded.com>
+---
+ Documentation/mic/mpssd/mpssd.c   | 24 ++++++++++++++++--------
+ drivers/misc/mic/vop/vop_main.c   | 11 ++++++-----
+ drivers/misc/mic/vop/vop_vringh.c |  5 ++---
+ include/uapi/linux/mic_common.h   |  6 ++++++
+ 4 files changed, 30 insertions(+), 16 deletions(-)
+
+diff --git a/Documentation/mic/mpssd/mpssd.c b/Documentation/mic/mpssd/mpssd.c
+index 30fb842..07fc71f 100644
+--- a/Documentation/mic/mpssd/mpssd.c
++++ b/Documentation/mic/mpssd/mpssd.c
+@@ -419,6 +419,16 @@ static inline unsigned _vring_size(unsigned int num, unsigned long align)
+ 		+ sizeof(__u16) * 3 + sizeof(struct vring_used_elem) * num;
+ }
+ 
++static inline unsigned _vring_info_offset(unsigned int num, unsigned long align)
++{
++	return (_vring_size(num, align) + sizeof(int) - 1) & ~(sizeof(int) - 1);
++}
++
++static inline unsigned _vring_total_size(unsigned int num, unsigned long align)
++{
++	return _vring_info_offset(num, align) + sizeof(struct _mic_vring_info);
++}
++
+ /*
+  * This initialization routine requires at least one
+  * vring i.e. vr0. vr1 is optional.
+@@ -430,9 +440,8 @@ init_vr(struct mic_info *mic, int fd, int type,
+ 	int vr_size;
+ 	char *va;
+ 
+-	vr_size = PAGE_ALIGN(_vring_size(MIC_VRING_ENTRIES,
+-					 MIC_VIRTIO_RING_ALIGN) +
+-			     sizeof(struct _mic_vring_info));
++	vr_size = PAGE_ALIGN(_vring_total_size(MIC_VRING_ENTRIES,
++					 MIC_VIRTIO_RING_ALIGN));
+ 	va = mmap(NULL, MIC_DEVICE_PAGE_END + vr_size * num_vq,
+ 		PROT_READ, MAP_SHARED, fd, 0);
+ 	if (MAP_FAILED == va) {
+@@ -444,7 +453,7 @@ init_vr(struct mic_info *mic, int fd, int type,
+ 	set_dp(mic, type, va);
+ 	vr0->va = (struct mic_vring *)&va[MIC_DEVICE_PAGE_END];
+ 	vr0->info = vr0->va +
+-		_vring_size(MIC_VRING_ENTRIES, MIC_VIRTIO_RING_ALIGN);
++		_vring_info_offset(MIC_VRING_ENTRIES, MIC_VIRTIO_RING_ALIGN);
+ 	vring_init(&vr0->vr,
+ 		   MIC_VRING_ENTRIES, vr0->va, MIC_VIRTIO_RING_ALIGN);
+ 	mpsslog("%s %s vr0 %p vr0->info %p vr_size 0x%x vring 0x%x ",
+@@ -456,7 +465,7 @@ init_vr(struct mic_info *mic, int fd, int type,
+ 	if (vr1) {
+ 		vr1->va = (struct mic_vring *)
+ 			&va[MIC_DEVICE_PAGE_END + vr_size];
+-		vr1->info = vr1->va + _vring_size(MIC_VRING_ENTRIES,
++		vr1->info = vr1->va + _vring_info_offset(MIC_VRING_ENTRIES,
+ 			MIC_VIRTIO_RING_ALIGN);
+ 		vring_init(&vr1->vr,
+ 			   MIC_VRING_ENTRIES, vr1->va, MIC_VIRTIO_RING_ALIGN);
+@@ -1077,9 +1086,8 @@ stop_virtblk(struct mic_info *mic)
+ {
+ 	int vr_size, ret;
+ 
+-	vr_size = PAGE_ALIGN(_vring_size(MIC_VRING_ENTRIES,
+-					 MIC_VIRTIO_RING_ALIGN) +
+-			     sizeof(struct _mic_vring_info));
++	vr_size = PAGE_ALIGN(_vring_total_size(MIC_VRING_ENTRIES,
++					 MIC_VIRTIO_RING_ALIGN));
+ 	ret = munmap(mic->mic_virtblk.block_dp,
+ 		MIC_DEVICE_PAGE_END + vr_size * virtblk_dev_page.dd.num_vq);
+ 	if (ret < 0)
+diff --git a/drivers/misc/mic/vop/vop_main.c b/drivers/misc/mic/vop/vop_main.c
+index 1ab13ba..050aedf 100644
+--- a/drivers/misc/mic/vop/vop_main.c
++++ b/drivers/misc/mic/vop/vop_main.c
+@@ -287,9 +287,10 @@ static struct virtqueue *vop_find_vq(struct virtio_device *dev,
+ 	void __iomem *va;
+ 	struct _mic_vring_info __iomem *info;
+ 	void *used;
+-	int vr_size, _vr_size, err, magic;
++	int vr_size, err, magic;
+ 	struct vring *vr;
+ 	u8 type = ioread8(&vdev->desc->type);
++	u16 num;
+ 
+ 	if (index >= ioread8(&vdev->desc->num_vq))
+ 		return ERR_PTR(-ENOENT);
+@@ -300,14 +301,14 @@ static struct virtqueue *vop_find_vq(struct virtio_device *dev,
+ 	/* First assign the vring's allocated in host memory */
+ 	vqconfig = _vop_vq_config(vdev->desc) + index;
+ 	memcpy_fromio(&config, vqconfig, sizeof(config));
+-	_vr_size = vring_size(le16_to_cpu(config.num), MIC_VIRTIO_RING_ALIGN);
+-	vr_size = PAGE_ALIGN(_vr_size + sizeof(struct _mic_vring_info));
++	num = le16_to_cpu(config.num);
++	vr_size = PAGE_ALIGN(MIC_VR_TOTAL_SIZE(num));
+ 	va = vpdev->hw_ops->map(vpdev, le64_to_cpu(config.address),
+ 			vr_size);
+ 	if (!va)
+ 		return ERR_PTR(-ENOMEM);
+ 	vdev->vr[index] = va;
+-	memset_io(va, 0x0, _vr_size);
++	memset_io(va, 0x0, vring_size(num, MIC_VIRTIO_RING_ALIGN));
+ 	vq = vring_new_virtqueue(
+ 				index,
+ 				le16_to_cpu(config.num), MIC_VIRTIO_RING_ALIGN,
+@@ -318,7 +319,7 @@ static struct virtqueue *vop_find_vq(struct virtio_device *dev,
+ 		err = -ENOMEM;
+ 		goto unmap;
+ 	}
+-	info = va + _vr_size;
++	info = va + MIC_VR_INFO_OFFSET(num);
+ 	magic = ioread32(&info->magic);
+ 
+ 	if (WARN(magic != MIC_MAGIC + type + index, "magic mismatch")) {
+diff --git a/drivers/misc/mic/vop/vop_vringh.c b/drivers/misc/mic/vop/vop_vringh.c
+index 2775fac..3131256 100644
+--- a/drivers/misc/mic/vop/vop_vringh.c
++++ b/drivers/misc/mic/vop/vop_vringh.c
+@@ -309,8 +309,7 @@ static int vop_virtio_add_device(struct vop_vdev *vdev,
+ 
+ 		num = le16_to_cpu(vqconfig[i].num);
+ 		mutex_init(&vvr->vr_mutex);
+-		vr_size = PAGE_ALIGN(vring_size(num, MIC_VIRTIO_RING_ALIGN) +
+-			sizeof(struct _mic_vring_info));
++		vr_size = PAGE_ALIGN(MIC_VR_TOTAL_SIZE(num));
+ 		vr->va = vpdev->hw_ops->alloc_mappable(vpdev, vr_size,
+ 					&vr_addr);
+ 		if (!vr->va) {
+@@ -320,7 +319,7 @@ static int vop_virtio_add_device(struct vop_vdev *vdev,
+ 			goto err;
+ 		}
+ 		vr->len = vr_size;
+-		vr->info = vr->va + vring_size(num, MIC_VIRTIO_RING_ALIGN);
++		vr->info = vr->va + MIC_VR_INFO_OFFSET(num);
+ 		vr->info->magic = cpu_to_le32(MIC_MAGIC + vdev->virtio_id + i);
+ 		vqconfig[i].address = cpu_to_le64(vr_addr);
+ 
+diff --git a/include/uapi/linux/mic_common.h b/include/uapi/linux/mic_common.h
+index e968637..3fa715e 100644
+--- a/include/uapi/linux/mic_common.h
++++ b/include/uapi/linux/mic_common.h
+@@ -154,6 +154,12 @@ struct _mic_vring_info {
+ 	__le32 magic;
+ };
+ 
++#define MIC_VR_INFO_OFFSET(num) \
++	ALIGN(vring_size((num), MIC_VIRTIO_RING_ALIGN), sizeof(int))
++
++#define MIC_VR_TOTAL_SIZE(num) \
++	(MIC_VR_INFO_OFFSET(num) + sizeof(struct _mic_vring_info))
++
+ /**
+  * struct mic_vring - Vring information.
+  *
+-- 
+1.9.1
+
